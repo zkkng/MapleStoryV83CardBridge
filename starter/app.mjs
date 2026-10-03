@@ -13,7 +13,9 @@ const $ = (id) => document.getElementById(id),
     );
 let session = { signedIn: false },
   catalog,
-  state;
+  state,
+  sessionGeneration = 0,
+  signingOut = false;
 const message = (value) => ($("status").textContent = value);
 async function api(route, value) {
   const res = await fetch("/api/library/" + route, {
@@ -39,8 +41,12 @@ function intentKey() {
   return "cosmic-pack:" + session.username;
 }
 async function refresh() {
-  session = await api("session");
+  const generation = sessionGeneration;
+  const nextSession = await api("session");
+  if (generation !== sessionGeneration) return;
   catalog ??= await api("catalog");
+  if (generation !== sessionGeneration) return;
+  session = nextSession;
   $("login").hidden = session.signedIn;
   $("signed-in").hidden = !session.signedIn;
   $("welcome").textContent = session.signedIn
@@ -54,7 +60,9 @@ async function refresh() {
     $("collection").textContent = "Your cards will appear here.";
     $("codes").replaceChildren();
   } else {
-    state = await api("state");
+    const nextState = await api("state");
+    if (generation !== sessionGeneration) return;
+    state = nextState;
     $("purchase").disabled = false;
     $("wallet").innerHTML = state.wallet.balances
       .map(
@@ -170,8 +178,11 @@ async function refresh() {
     $("cash-type").value = selectedType;
 }
 async function open(id) {
+  if (signingOut || !session.signedIn) return;
+  const generation = sessionGeneration;
   try {
     const opened = await api("open", { key: "open-" + id, packId: id });
+    if (generation !== sessionGeneration) return;
     $("opened").innerHTML =
       '<h3>Your opening</h3><div class="card-grid">' +
       opened.cards
@@ -187,13 +198,15 @@ async function open(id) {
         .join("") +
       "</div>";
     await refresh();
+    if (generation !== sessionGeneration) return;
     message("Your cards are saved in your collection.");
   } catch (e) {
-    message(e.message);
+    if (generation === sessionGeneration) message(e.message);
   }
 }
 $("login").onsubmit = async (e) => {
   e.preventDefault();
+  sessionGeneration++;
   const form = e.currentTarget,
     button = form.querySelector("button");
   button.disabled = true;
@@ -225,6 +238,8 @@ $("refresh").onclick = async () => {
   }
 };
 $("logout").onclick = async () => {
+  signingOut = true;
+  sessionGeneration++;
   try {
     await api("logout", {});
     $("opened").replaceChildren();
@@ -232,6 +247,8 @@ $("logout").onclick = async () => {
     message("Signed out.");
   } catch (e) {
     message(e.message);
+  } finally {
+    signingOut = false;
   }
 };
 $("buy").onsubmit = async (e) => {

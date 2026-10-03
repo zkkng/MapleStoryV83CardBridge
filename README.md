@@ -1,8 +1,8 @@
 # MapleStory v83 Card Bridge
 
-Connect [DigitalCardFramework](docs/framework-runtime.md) to a Cosmic GMS v83 server. Players choose NX Credit, Maple Points, or NX Prepaid, buy and open packs, collect cards, and redeem newly generated Series One code cards in the native Cash Shop. The game reports USED only after the reward inventory and receipt commit together.
+Connect [DigitalCardFramework](https://github.com/zkkng/DigitalCardFramework) to a Cosmic GMS v83 server. Players choose NX Credit, Maple Points, or NX Prepaid, buy and open packs, collect cards, and redeem newly generated Series One code cards in the native Cash Shop. The game reports USED only after the reward inventory and receipt commit together.
 
-The bridge includes a standalone account-and-pack website. [GrendelLibrary](https://github.com/zkkng/GrendelLibrary) is a separate, optional frontend. Neither the Grove website nor game artwork is required for the starter.
+The bridge includes a standalone account-and-pack website. You can also build a custom frontend through the public bridge protocol. Neither the Grove website nor game artwork is required for the starter.
 
 ## Requirements
 

@@ -70,6 +70,7 @@ try {
   await page.waitForFunction(
     () => document.querySelectorAll("#opened .card").length === 9,
   );
+  await page.locator("#collection .card").first().waitFor();
   assert.equal(await page.locator("#collection .card").count(), 8);
   await page.getByRole("button", { name: "Reveal code", exact: true }).click();
   await page.locator(".code-text").waitFor();
@@ -93,15 +94,31 @@ try {
     .click();
   await page.locator(".used").waitFor();
   assert.equal(await page.locator(".used").textContent(), "USED");
+  let releaseOpening, openingReturned;
+  const heldOpening = new Promise((resolve) => (releaseOpening = resolve));
+  const pendingOpening = new Promise((resolve) => (openingReturned = resolve));
+  await page.route("**/api/library/open", async (route) => {
+    const response = await route.fetch();
+    openingReturned();
+    await heldOpening;
+    await route.fulfill({ response });
+  });
   await page.locator("[data-pack]").first().click();
-  await page.waitForFunction(
-    () =>
-      document.querySelector("#status").textContent ===
-      "Your cards are saved in your collection.",
-  );
+  await pendingOpening;
   assert.equal(x.core.inventory(x.library.actor(x.person)).length, 9);
   assert.equal(x.debitCount, 1);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector("#status").textContent === "Signed out.",
+  );
+  const releasedResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/library/open"),
+  );
+  releaseOpening();
+  await releasedResponse;
+  await page.evaluate(() => new Promise((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  ));
   await page.locator("#login").waitFor({ state: "visible" });
   assert.equal(sessions.size, 0);
   assert.equal(await page.locator(".code-text").count(), 0);
