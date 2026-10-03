@@ -57,4 +57,4 @@ Reveal requires an opened owned pack and successful game registration. It return
 
 Replace `BridgeSessions.session` with a trusted session lookup that binds the server-issued token hash to one existing game account. Require expiry, revocation, bans and temporary bans. Keep the result `{accountId,name}`. The bridge consumes that verified identity; it does not accept an asserted owner from the browser.
 
-A different frontend can use these same HTTP contracts. It does not need GrendelLibrary or access to framework storage internals.
+A custom frontend can use these HTTP contracts for account access, purchases, collections, and reward codes.

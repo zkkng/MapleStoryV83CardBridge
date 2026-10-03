@@ -39,10 +39,20 @@ The adapter adds `card_bridge_codes`, `card_bridge_payments`, `card_bridge_outbo
 
 The standalone starter validates the existing Cosmic password formats without changing the game's login state. Website sessions contain only a SHA-256 token hash, account ID and expiry; the browser receives an HttpOnly cookie. Sessions expire after one day, and account bans and temporary bans are checked on every lookup.
 
-Grove mode delegates sign-in to the existing account website and validates its session table. Another host must provide equivalent verified account mapping, expiry, revocation and ban checks. A browser-submitted account ID or character name cannot establish ownership.
+Portal session mode delegates sign-in to the configured account website and validates its session table. Another host must provide equivalent verified account mapping, expiry, revocation and ban checks. A browser-submitted account ID or character name cannot establish ownership.
 
 ## Check the installation
 
 Run the complete game tests, then start the rebuilt game with the adapter enabled. Confirm startup can hold the MySQL writer lease; a second enabled game process must fail rather than become another reward writer. Start the bridge and complete the [starter workflow](../README.md). Check each accepted cash type separately and test an insufficient selected balance. The default Shapes pack must produce collectible cards and no reward codes. If you explicitly enable a reward campaign, also retry the same code after redemption: it must grant no second item.
 
 Disable the adapter only after reconciling purchases and reward claims. Stop the bridge first, and restart the game when changing `CARD_BRIDGE_ENABLED`. Do not switch back to cached cash writes while an enabled bridge can still debit accounts.
+
+## Customize packs and currency
+
+Set `CATALOG_PATH` to your framework catalog. Cards, sets, rarities, pack contents and prices are catalog data. Increase the catalog version when content changes and the product revision when pack terms change. Finish pending purchases before switching versions.
+
+Set `ACCEPTED_CASH_TYPES` and `CARD_BRIDGE_ACCEPTED_CASH_TYPES` to the same subset of `1,2,4` (NX Credit, Maple Points, NX Prepaid). They have equal numeric prices; debits never combine balances or fall back to another balance.
+
+Other currencies, such as vote points, require an authoritative balance lookup, debit, durable payment receipt, and retry behavior in the game adapter, plus the corresponding bridge settlement mapping. See [the protocol](protocol.md). The generic framework supports catalog currencies; the supplied Cosmic wallet implements the three native cash balances.
+
+The standalone service leaves rewards disabled with `ENABLE_SERIES_ONE_REWARDS=0`. To use the supplied campaign, configure a catalog with a `v83.series-one` code insert and set `ENABLE_SERIES_ONE_REWARDS=1`; the [managed Series One profile](cosmic-setup.md#install-and-verify) does this automatically. Review [code rules](code-rules.md) before enabling it.
