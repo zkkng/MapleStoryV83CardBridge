@@ -7,6 +7,7 @@ On WSL2, keep the managed deployment inside the WSL home directory so private fi
 - [Install and verify](#install-and-verify)
 - [Start, stop and diagnose](#start-stop-and-diagnose)
 - [Accounts and funding](#accounts-and-funding)
+- [Website administrators](#website-administrators)
 - [Customize the catalog](#customize-the-catalog)
 - [Private state and backups](#private-state-and-backups)
 - [Upgrade](#upgrade)
@@ -26,6 +27,8 @@ The installation directory must be separate from the source repository and empty
 
 Open `http://127.0.0.1:8490/library/`. Setup's final readiness check proves the signed game request, the signed provider callback, matching authentication mode and accepted cash types, and the website proxy. It fails when these disagree. The public catalog remains readable during a game outage, but the readiness endpoint returns failure.
 
+Service readiness does not finish owner setup. Installation prints **Owner setup incomplete** until an ordinary native account receives an explicit website administrator grant. Follow [Website administrators](#website-administrators). The disposable test account remains a collector.
+
 `--test-account` creates a disposable `CardTest` native game account with 5,000 NX Prepaid. Setup purchases one 1,000-unit Shapes pack, retries the same purchase, opens its eight collectibles and signs out. Credentials stay in `CosmicCardServer/private/test-account.json`; they are never printed. Keep this account for local testing only. The normal install omits it and grants no cash. The upstream demonstration administrator is disabled during the seed migration.
 
 For a pack with exactly one dedicated Series One code insert, enable its complete profile explicitly:
@@ -35,6 +38,8 @@ python3 tools/cosmic.py --directory ../CosmicRewardsServer install --series-one 
 ```
 
 This adds the insert to each default pack and sets `ENABLE_SERIES_ONE_REWARDS=1`. Verification opens eight collectibles plus one code card, checks its game registration and reveals its code. The profile does not download card scans. A normal install leaves the reward provider disabled and issues no item codes.
+
+For an existing reward-free installation, use the separate [selected-pack reward activation procedure](code-rules.md#enable-rewards-on-an-existing-managed-installation). It backs up and stops writers before changing the active catalog; `install --series-one` cannot be reapplied to an existing deployment.
 
 An interrupted install leaves `setup.pending.json`. Repeat the **same command and options** to resume without replacing persistent keys, duplicating funding or buying another verification pack. A completed installation refuses a second install; use `start` or `upgrade` instead. Do not delete the marker, keys or volumes to recover an interrupted purchase.
 
@@ -57,7 +62,7 @@ python3 tools/cosmic.py --directory ../CosmicCardServer start
 python3 tools/cosmic.py --directory ../CosmicCardServer smoke
 ```
 
-`smoke` requires the optional setup account and reuses its existing pack, including an already opened pack. It checks eight collectibles in the default profile, or eight plus a registered code in the Series One profile. Stop refuses while a game account is logged in. Containers restart automatically after host or process failure; volumes retain the game database and encrypted card state. Start waits for database, adapter, callback and proxy readiness.
+`smoke` requires the optional setup account. Its private state receipt freezes the verification quote before payment and retains only that purchase's pack/card identities. Repeating it replays the same order/opening and tolerates additional purchases without consuming another pack or charging again. It checks only its own collectibles and optional code registration. Stop refuses while a game account is logged in. Containers restart automatically after host or process failure; volumes retain the game database and encrypted card state. Start waits for database, adapter, callback and proxy readiness. Docker logs rotate at 10 MiB with three files per service.
 
 For startup diagnostics:
 
@@ -66,7 +71,7 @@ docker compose -f ../CosmicCardServer/compose.json ps
 docker compose -f ../CosmicCardServer/compose.json logs --tail 100 cosmic cards web
 ```
 
-Do not publish environment dumps, SQL backups or code-reveal responses. An installation that moved to another directory is rejected because its Compose project and volumes belong to the recorded original path.
+Do not publish environment dumps, SQL backups or code-reveal responses. Normal lifecycle commands require the recorded directory. Use [explicit disaster recovery](operations.md#lost-installation-recovery) to relocate a lost installation; copying a live directory does not move its Docker volumes.
 
 ## Accounts and funding
 
@@ -81,13 +86,49 @@ Use 3–13 letters or digits for the account name and 8–72 UTF-8 bytes for the
 
 Cash types are 1=NX Credit, 2=Maple Points and 4=NX Prepaid. Funding requires a request ID. Retry an uncertain credit with the same ID, cash type and amount; its SQL receipt prevents duplicate credit. Reusing an ID with different terms is rejected. Use a new ID for an intentional additional credit. These commands are operator tools, not public website routes. Funding receipts live in `card_bridge_operator_funding`.
 
+## Website administrators
+
+Create or select an ordinary native account and grant website administration:
+
+```sh
+python3 tools/cosmic.py --directory ../CosmicCardServer account create Owner
+python3 tools/cosmic.py --directory ../CosmicCardServer admin grant Owner
+python3 tools/cosmic.py --directory ../CosmicCardServer admin list
+```
+
+Sign in at `http://127.0.0.1:8490/library/` with that native password and open Administration. Edit a card or pack, preview the change, then publish it. Use a separate collector account for purchases. Website grants use verified numeric game account IDs; they do not change GM level, passwords or cash. Unknown and banned accounts are refused. Repeating a grant or revoke is safe.
+
+```sh
+python3 tools/cosmic.py --directory ../CosmicCardServer admin revoke Owner
+```
+
+Revocation applies to existing website sessions. The local CLI also recovers an installation with no remaining administrator. Preserve the journal containing grants in backups. See [administration](administration.md) for content and diagnostic controls.
+
+For a banned/deleted identity, revoke its remembered grant using the verified numeric ID from `admin list`:
+
+```sh
+python3 tools/cosmic.py --directory ../CosmicCardServer admin revoke --account-id 123
+```
+
+Replace 123 with the grant ID. This form avoids eligible-account resolution and is safe to repeat. The managed cards container must still be running; the manual CLI can perform the same numeric revoke directly against local state when the game is unavailable.
+
 ## Customize the catalog
 
 For a new installation, `install --catalog path/to/catalog.json` installs your collectible catalog. The optional [iTCG importer](itcg-import.md) generates separate packs whose images load directly from the source website, requiring no asset mount. Keep the input catalog outside the managed installation directory. Setup records its hash and refuses to resume with changed contents. Reward-bearing input catalogs are rejected; `--series-one` explicitly adds the supplied insert. With `--test-account`, the first pack must cost no more than its 5,000 NX Prepaid starting balance.
 
-The managed catalog is `CosmicCardServer/private/catalog.json`, mounted read-only into the card service. Change this file rather than giving the container a host-only `CATALOG_PATH`. For the Series One profile, keep the generated insert's pool ID `v83.series-one`. Increase the catalog version after content changes and the product revision after changing pack terms. Prices and collectible rarity weights belong to the catalog; Series One game rewards remain constrained by the adapter whitelist. Imported scans do not enable this provider or create code inserts.
+`CosmicCardServer/private/catalog.json` is the read-only bootstrap seed for an empty installation. After initialization the durable framework catalog is authoritative. Editing the seed and restarting does not replace a published catalog. Use Administration to edit cards, sets, rarity weights and pack prices, or explicitly preview/publish a JSON import. Publication validates revisions and conflicts before changing active content. Unresolved purchases must finish before incompatible content changes.
 
-Finish pending purchases, stop the services, back up the original catalog file privately, edit it, and start again. The card service rejects changed content under the same version and refuses catalog publication while a purchase is unresolved. Restore the original file if validation fails. The upgrade command preserves this customized file. The [framework runtime](framework-runtime.md) supplies catalog and card contracts; game assets and your card artwork are separate inputs.
+For the Series One profile, retain the generated insert's pool ID `v83.series-one`; game rewards remain constrained by the adapter whitelist. Imported scans do not enable this provider or create code inserts. Backup and upgrade preserve active catalog, grants and issued obligations. The [framework runtime](framework-runtime.md) supplies card contracts; game assets and your artwork remain separate inputs.
+
+### Original static images
+
+The managed `media/` folder is mounted read-only as the card service's `/assets`. To use a raster image you own or have permission to serve:
+
+```sh
+install -m 644 /path/to/your/own.png ../CosmicCardServer/media/own.png
+```
+
+Set the card form's image to `/assets/library/own.png`, preview and publish. Subfolders use letters, numbers, underscores or hyphens; files must be PNG, JPEG or WebP with a matching lowercase extension. No upload control or bundled third-party art is provided. Keep images at most 32 MiB each and managed media at most 512 MiB total. Managed backup, restore and disaster recovery include these files. Imported remote scans need no media copy; see [the scan importer](itcg-import.md).
 
 ## Private state and backups
 
@@ -107,7 +148,9 @@ Restore one of this installation's backups:
 python3 tools/cosmic.py --directory ../CosmicCardServer restore --backup ../CosmicCardServer/backups/REPLACE_WITH_BACKUP_NAME
 ```
 
-Restore verifies checksums and allowed state paths, requires the original installation identity and database credentials, and takes a safety backup before replacing data. It loads and verifies the saved runtime images, restores both databases and keys, then checks readiness. A failed restore attempts recovery from its safety backup. Restore accepts trusted operator backups only. It does not merge databases, move installations or restore a different server's backup.
+Restore verifies checksums, SQLite integrity/schema and allowed state paths, requires the original installation identity and database credentials, and takes a safety backup before replacing data. It loads and verifies the saved runtime images, replaces the owned MySQL schema and card state, and validates restored services with game/web ingress closed. A private validation failure attempts the safety backup. A later activation failure preserves current data to avoid losing a new transaction; see [operations](operations.md#consistent-backups-and-in-place-restore). Restore accepts trusted operator backups only. It does not merge databases, move installations or restore a different server's backup.
+
+If the original installation and volumes are lost, use the separate [empty-target recovery command](operations.md#lost-installation-recovery). It needs only the trusted off-host backup, the public bridge tools, Docker and public locked runtime images. It refuses nonempty destinations, wrong project identities and surviving project resources. Explicit relocation changes the directory while retaining the installation project and keys.
 
 ## Upgrade
 
@@ -118,6 +161,8 @@ python3 tools/cosmic.py --directory ../CosmicCardServer upgrade
 ```
 
 Upgrade refuses connected game accounts and unresolved purchases, validates and installs the adapter into the managed game copy, builds and tests the new images, makes a consistent safety backup, then starts and checks the candidate. A failed candidate restores the previous images, keys and data. Issued codes, the customized catalog and persistent encryption/index keys are retained. Locked base images and the Cosmic source revision are not silently changed. Major Cosmic/runtime migrations require separate qualification.
+
+Candidate validation temporarily removes all published game/web ports while retaining the database service. Internal readiness passes before those ports reopen. A staging failure can safely restore the previous backup because players could not transact with the candidate. If final ingress activation fails after reopening ports, services stop and candidate data is retained; the error names the safety backup and recommends correcting configuration and running `start`. Automatic rollback at that point could discard a new transaction, so it is deliberately refused.
 
 ## Remote players
 

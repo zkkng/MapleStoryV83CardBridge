@@ -38,7 +38,7 @@ jobs:
         working-directory: cosmic
   managed-cosmic:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     strategy:
       matrix:
         include:
@@ -51,7 +51,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install a complete fresh Cosmic deployment
-        run: python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" install --test-account ${{ matrix.options }}
+        run: |
+          umask 077
+          python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" install --test-account ${{ matrix.options }}
       - name: Check funding retries and readiness
         run: |
           python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" account fund CardTest --cash-type 4 --amount 5000 --request-id setup-funding-v1
@@ -61,19 +63,14 @@ jobs:
           python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" stop
           python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" start
           python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" smoke
-      - name: Back up, restore and verify
-        run: |
-          python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" backup
-          backup=$(find "$RUNNER_TEMP/CosmicCardServer/backups" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)
-          python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" restore --backup "$backup"
-          python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" smoke
-      - name: Upgrade and verify
-        run: |
-          python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" upgrade
-          python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" smoke
+      - name: Qualify owner administration, commerce, mutation restore, lease recovery and disaster rollback
+        run: python3 test/managed-lifecycle.py "$RUNNER_TEMP/CosmicCardServer" --sandbox-root "$RUNNER_TEMP"
       - name: Remove the disposable deployment
         if: always()
         run: |
           if [ -f "$RUNNER_TEMP/CosmicCardServer/compose.json" ]; then
             docker compose -f "$RUNNER_TEMP/CosmicCardServer/compose.json" down --volumes --remove-orphans
+          fi
+          if [ -f "$RUNNER_TEMP/RecoveredCardServer/compose.json" ]; then
+            docker compose -f "$RUNNER_TEMP/RecoveredCardServer/compose.json" down --volumes --remove-orphans
           fi

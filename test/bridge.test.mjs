@@ -125,7 +125,7 @@ test("a code remains hidden until registration; another account cannot open or r
       (e) => e.code === "CODE_PREPARING",
     );
     x.faults.registration = false;
-    await x.library.reconcile();
+    await x.library.reconcile({ force: true });
     assert.throws(() =>
       x.library.reveal(x.other, { key: "other-reveal", codeId: id }),
     );
@@ -268,6 +268,49 @@ test("HMAC authentication binds the exact body, path, time and nonce and rejects
     false,
   );
 });
+test("future-dated signatures retain replay protection through the inclusive validity boundary", () => {
+  const secret = "replay-fixture-".repeat(4),
+    now = 1790942400000,
+    path = "/api/library/provider/used",
+    body = "{}",
+    nonces = new Map();
+  const signed = (at, nonce) => ({
+    "x-bridge-time": String(at),
+    "x-bridge-nonce": nonce,
+    "x-bridge-signature": mac(
+      secret,
+      ["POST", path, String(at), nonce, hash(body)].join("\n"),
+    ),
+  });
+  const check = (headers, at, cache = nonces) =>
+    verifyRequest({
+      secret,
+      method: "POST",
+      path,
+      headers,
+      body,
+      nonces: cache,
+      now: at,
+    });
+  const headers = signed(now + 59000, "b".repeat(32));
+  assert.equal(check(headers, now), true);
+  assert.equal(check(headers, now), false);
+  assert.equal(check(headers, now + 61000), false);
+  assert.equal(check(headers, now + 119000), false);
+  assert.equal(check(headers, now + 119001), false);
+  assert.equal(check(signed(now + 119001, "b".repeat(32)), now + 119001), true);
+  const past = signed(now - 60000, "c".repeat(32)),
+    pastCache = new Map();
+  assert.equal(check(past, now, pastCache), true);
+  assert.equal(check(past, now, pastCache), false);
+  assert.equal(check(past, now + 1, pastCache), false);
+  const capped = new Map(
+    Array.from({ length: 10000 }, (_, i) => [String(i), now]),
+  );
+  assert.equal(check(signed(now, "d".repeat(32)), now, capped), false);
+  assert.equal(check(signed(now + 1, "d".repeat(32)), now + 1, capped), true);
+  assert.equal(capped.size, 1);
+});
 test("HTTP preview stays public while collection mutations require a verified session, origin and CSRF", async () => {
   const x = fixture(),
     secret = "shared-test-".repeat(4),
@@ -357,7 +400,7 @@ test("purchase registration stays scoped and recovery backs off immediately duri
     await x.buy("second-ready", 1, x.other);
     assert.equal(x.registrations.size, 1);
     assert.equal([...x.registrations.values()][0].material.accountId, 2);
-    await x.library.reconcile();
+    await x.library.reconcile({ force: true });
     assert.equal(x.registrations.size, 2);
     x.faults.lostDebit = true;
     await assert.rejects(x.buy("pending-first", 1, x.person));

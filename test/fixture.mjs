@@ -67,6 +67,7 @@ export function fixture({
         fail("GAME_UNAVAILABLE", "Fixture game is unavailable", 503);
       return {
         ok: true,
+        leaseReady: true,
         protocol: "v83-card-bridge/1",
         callbackReady: true,
         sessionSource: faults.sessionSource ?? "bridge",

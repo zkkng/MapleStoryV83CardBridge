@@ -8,7 +8,7 @@ import {
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 const setup = fileURLToPath(new URL("../tools/setup.mjs", import.meta.url));
@@ -44,7 +44,8 @@ test("setup creates independent persistent keys and refuses either pre-existing 
       }),
   );
   assert.equal(node.ENABLE_SERIES_ONE_REWARDS, "0");
-  assert.equal(node.CATALOG_PATH, "./data/catalog.example.json");
+  assert.equal(node.CATALOG_PATH, resolve("./data/catalog.example.json"));
+  assert.equal(node.STATE_DIRECTORY, resolve("./state"));
   const game = readFileSync(join(directory, "game.env"), "utf8");
   assert(game.includes("CARD_BRIDGE_SHARED_KEY=" + node.GAME_SHARED_KEY));
   const keys = [

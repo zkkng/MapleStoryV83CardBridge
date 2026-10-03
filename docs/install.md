@@ -1,58 +1,100 @@
-# Install the Cosmic adapter
+# Install into an existing Cosmic server
 
-Applies to bridge 0.1 and the Cosmic revision in [compatibility](compatibility.md). For a complete new deployment, use [scripted Cosmic setup](cosmic-setup.md). This guide covers installing the adapter into an existing operated server. First confirm that normal Cosmic login works with your v83 client; the bridge does not supply a client.
+Applies to bridge 0.1 and the pinned Cosmic revision in [compatibility](compatibility.md). This path retains the existing game database, accounts, passwords and cash. For a new isolated deployment, use [scripted Cosmic setup](cosmic-setup.md). A separately supplied v83 client must already log into the game.
 
-Manual service installation requires Node.js 24.14+, Java 21, Python 3 and the existing Cosmic MySQL database.
+Requirements: Linux with systemd, Node.js 24.14 or newer at `/usr/bin/node`, Java 21, Maven, Python 3.11+, Git, and the operated Cosmic checkout and MySQL database. The commands use `/opt/cosmic` for that checkout and `cosmic.service` for its existing service; replace both consistently if yours differs. Unknown forks require their own compatibility tests.
 
-## Hooks
+## Back up and patch the game
 
-| File                   | Change                                                                                                                                                             |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| CouponCodeHandler      | Check bridge codes inside the existing client lock; unknown codes continue through the existing coupon handler.                                                    |
-| Character.saveCharToDB | Run `beforeSave` immediately before the inventory transaction commits, and `afterSave` only after commit.                                                          |
-| CashShop               | Read and mutate all three cash balances from the authoritative account row while enabled; avoid saving stale cached balances. Cash inventory still saves normally. |
-| Server startup         | Start the signed loopback adapter after game initialization and before the login listener.                                                                         |
-| Maven                  | Add Gson 2.13.2 and test-only H2 2.3.232. Run the adapter tests in their own JVM, preserving the game's one-time WZ initialization.                                |
+Stop purchases and disconnect game accounts before maintenance. Stop the existing game service and take its normal tested MySQL/configuration backup. Keep the current jar and Git revision available for rollback. Do not rerun seed migrations or replace the operating database.
 
-`tools/install-cosmic.py SERVER --check` validates without writing. The regular invocation validates all anchors first, writes the hooks, and copies `java/src` into the game checkout. It rejects conflicting dependency versions and unknown source layouts. Repeating it does not duplicate hooks or dependencies.
+```sh
+sudo systemctl stop cosmic.service
+sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 755 /opt/card-library
+git clone https://github.com/zkkng/MapleStoryV83CardBridge.git /opt/card-library/bridge
+cd /opt/card-library/bridge
+python3 tools/install-cosmic.py /opt/cosmic --check
+python3 tools/install-cosmic.py /opt/cosmic
+cd /opt/cosmic
+mvn -B test package
+```
 
-For a different revision, apply the same bounded hooks manually, retaining the inventory transaction boundary. Compilation alone does not establish compatibility. Add your target to your own tested compatibility record before deploying it.
+The installer validates all anchors before writing. It adds the coupon, character-save, authoritative cash, Cash Shop economic-ordering, and startup hooks plus their tests. Repeating the patch is safe; conflicting dependencies or unknown layouts are rejected. Inspect the game diff and run the complete tests before replacing the service's jar with the resulting `target/Cosmic.jar`, using the existing service's deployment procedure. Keep its working directory, WZ files, scripts and game configuration.
 
-## Configuration
+The enabled adapter adds its own tables and preserves native accounts, characters and coupons. Website sessions verify the existing password formats and account bans. It never grants website administration from a native GM level.
 
-Generate `.env` and `game.env` using `node tools/setup.mjs`. On Linux, load the game values into the actual service process environment; a shell launch can use `set -a; . /private/path/game.env; set +a`. On Windows, assign each KEY=VALUE line to that process's environment before running your jar. An existing service needs its own environment configuration.
+## Install the card service
 
-The default game adapter listens on `127.0.0.1:8486` or the platform loopback address. The bridge uses `GAME_URL=http://127.0.0.1:8486`. If your platform chooses IPv6 loopback, use `http://[::1]:8486`. A remote connection must use HTTPS with certificate validation through a private proxy.
+Install a compatible Node runtime through your operating system's approved package source. Confirm `node --version` and `/usr/bin/node` before installing the unit below.
 
-Game keys:
+```sh
+cd /opt/card-library/bridge
+npm ci --omit=dev --ignore-scripts
+chmod 755 /opt/card-library/bridge
+chmod -R a+rX,go-w src starter data tools node_modules
+chmod a+r,go-w package.json package-lock.json
+sudo useradd --system --no-create-home --home-dir /var/lib/card-library --shell /usr/sbin/nologin card-library
+sudo install -d -o card-library -g card-library -m 700 /var/lib/card-library
+sudo install -d -o root -g card-library -m 750 /etc/card-library
+sudo node tools/setup.mjs --output-directory /etc/card-library --state-directory /var/lib/card-library --catalog-path /opt/card-library/bridge/data/catalog.example.json --origin http://127.0.0.1:8487
+sudo chown root:card-library /etc/card-library/.env
+sudo chmod 640 /etc/card-library/.env
+sudo chmod 600 /etc/card-library/game.env
+```
 
-- `CARD_BRIDGE_ENABLED=1` enables the adapter and authoritative cash hooks.
-- `CARD_BRIDGE_SHARED_KEY` authenticates both services; it matches `GAME_SHARED_KEY`.
-- `CARD_BRIDGE_CODE_KEY` is a separate, persistent code-index key. Keep it stable.
-- `CARD_BRIDGE_CALLBACK_URL` points to the bridge's private `/api/library/provider/used` endpoint.
-- `CARD_BRIDGE_ACCEPTED_CASH_TYPES=1,2,4` enables Credit, Points and Prepaid.
-- `CARD_BRIDGE_SESSION_SOURCE=bridge` uses native starter sessions; `grove` uses the existing portal's `web_sessions`.
+Skip `useradd` if the dedicated service account already exists. The permission commands make only public runtime source and dependencies readable under a restrictive operator umask; they leave private state/configuration and Git metadata alone. Configuration generation refuses to overwrite either environment file; keep the existing keys on retries. The absolute state path agrees with the unit's writable directory. The source and `node_modules` may remain read-only to the service. Keep keys and state outside the source checkout.
 
-The adapter adds `card_bridge_codes`, `card_bridge_payments`, `card_bridge_outbox` and `card_bridge_sessions`. It preserves existing account, character and coupon tables. Its schema is embedded in the jar. Earlier payment rows without a cash type migrate explicitly to NX Credit, their original source.
+Add the generated game environment file to the existing service rather than replacing that service:
 
-## Account verification
+```sh
+sudo install -d -m 755 /etc/systemd/system/cosmic.service.d
+printf '[Service]\nEnvironmentFile=/etc/card-library/game.env\nRestart=on-failure\nRestartSec=5\n' | sudo tee /etc/systemd/system/cosmic.service.d/card-library.conf >/dev/null
+sudo install -m 644 /opt/card-library/bridge/deploy/card-library.service /etc/systemd/system/card-library.service
+sudo systemctl daemon-reload
+sudo systemctl start cosmic.service
+sudo systemctl enable --now card-library.service
+sudo -u card-library /usr/bin/node --env-file=/etc/card-library/.env tools/doctor.mjs
+```
 
-The standalone starter validates the existing Cosmic password formats without changing the game's login state. Website sessions contain only a SHA-256 token hash, account ID and expiry; the browser receives an HttpOnly cookie. Sessions expire after one day, and account bans and temporary bans are checked on every lookup.
+Expected result: signed game and callback checks pass and the website opens at `http://127.0.0.1:8487/library/`. The game adapter uses private loopback port 8486. The default Shapes pack has eight collectibles and no rewards. Keep both backend ports private. For Internet access, configure an exact HTTPS `PUBLIC_ORIGIN` and a TLS reverse proxy following [operations](operations.md#internet-access); restart the bridge after configuration changes.
 
-Portal session mode delegates sign-in to the configured account website and validates its session table. Another host must provide equivalent verified account mapping, expiry, revocation and ban checks. A browser-submitted account ID or character name cannot establish ownership.
+For different private listener ports, edit both environment files before starting: bridge `GAME_URL` must match native `CARD_BRIDGE_BIND`/`CARD_BRIDGE_PORT`; the bridge's loopback listener `PORT` must match native `CARD_BRIDGE_CALLBACK_URL`, whose path remains `/api/library/provider/used`. For example, use `GAME_URL=http://127.0.0.1:19486` with native bind `127.0.0.1` and port `19486`, and bridge `PORT=19487` with callback `http://127.0.0.1:19487/api/library/provider/used`. The setup tool's `--game-url` changes the bridge target only, so pair it with the native listener settings. `PUBLIC_ORIGIN` and `--origin` specify the browser-facing origin; they do not change either private listener or callback port. Adjust the reverse proxy upstream for a changed bridge port, preserve the original keys and rerun `doctor` after restart.
 
-## Check the installation
+The game service must use `Restart=on-failure` with a bounded `RestartSec`, for example five seconds. Adapter lease loss terminates the enabled game process with status 75 so the service can safely restart and acquire a new exclusive writer lease. Keep the card service stopped until the rebuilt game is enabled.
 
-Run the complete game tests, then start the rebuilt game with the adapter enabled. Confirm startup can hold the MySQL writer lease; a second enabled game process must fail rather than become another reward writer. Start the bridge and complete the [starter workflow](../README.md). Check each accepted cash type separately and test an insufficient selected balance. The default Shapes pack must produce collectible cards and no reward codes. If you explicitly enable a reward campaign, also retry the same code after redemption: it must grant no second item.
+## Grant the first website administrator
 
-Disable the adapter only after reconciling purchases and reward claims. Stop the bridge first, and restart the game when changing `CARD_BRIDGE_ENABLED`. Do not switch back to cached cash writes while an enabled bridge can still debit accounts.
+Choose an existing ordinary native account, or create one through your server's established registration procedure. Do not promote the upstream demonstration account. From the bridge directory:
 
-## Customize packs and currency
+```sh
+sudo -u card-library /usr/bin/node --env-file=/etc/card-library/.env tools/admin.mjs grant Owner
+sudo -u card-library /usr/bin/node --env-file=/etc/card-library/.env tools/admin.mjs list
+```
 
-Set `CATALOG_PATH` to your framework catalog. Cards, sets, rarities, pack contents and prices are catalog data. Increase the catalog version when content changes and the product revision when pack terms change. Finish pending purchases before switching versions.
+Replace `Owner` with its exact native account name. The CLI resolves the name through the signed game endpoint and refuses unknown or banned identities. Sign in on the website with that game's password, then open Administration to edit, preview and publish a pack. Grants are durable numeric account mappings, independent of GM level. To revoke access or recover from zero administrators, use the same local CLI:
 
-Set `ACCEPTED_CASH_TYPES` and `CARD_BRIDGE_ACCEPTED_CASH_TYPES` to the same subset of `1,2,4` (NX Credit, Maple Points, NX Prepaid). They have equal numeric prices; debits never combine balances or fall back to another balance.
+```sh
+sudo -u card-library /usr/bin/node --env-file=/etc/card-library/.env tools/admin.mjs revoke Owner
+```
 
-Other currencies, such as vote points, require an authoritative balance lookup, debit, durable payment receipt, and retry behavior in the game adapter, plus the corresponding bridge settlement mapping. See [the protocol](protocol.md). The generic framework supports catalog currencies; the supplied Cosmic wallet implements the three native cash balances.
+Use a separate collector account to verify the purchase workflow and all three cash types. Revocation applies to an already open session. The CLI needs live game identity resolution and the same writable state directory; do not run it against an unrelated state path.
 
-The standalone service leaves rewards disabled with `ENABLE_SERIES_ONE_REWARDS=0`. To use the supplied campaign, configure a catalog with a `v83.series-one` code insert and set `ENABLE_SERIES_ONE_REWARDS=1`; the [managed Series One profile](cosmic-setup.md#install-and-verify) does this automatically. Review [code rules](code-rules.md) before enabling it.
+If an account is banned or deleted, remove its remembered grant by the numeric ID shown by `list`, even while native identity resolution is unavailable:
+
+```sh
+sudo -u card-library /usr/bin/node --env-file=/etc/card-library/.env tools/admin.mjs revoke --account-id 123
+```
+
+Replace 123 with the actual grant ID. This local recovery operation changes only website access.
+
+## Configuration and qualification
+
+For your own static images, create `/var/lib/card-library/media`, grant the service read access, and set `ASSET_ROOT=/var/lib/card-library/media` in the private `.env`. Copy your permitted PNG/JPEG/WebP there with mode 644, then enter `/assets/library/filename.png` in the card form and preview/publish. Restart the bridge after changing `ASSET_ROOT`. Back up this directory with state. This is a static-file route, not a browser upload feature.
+
+`CATALOG_PATH` seeds an empty installation only. Edit live cards and packs through Administration and explicitly preview/publish imports; restarting with an old seed does not overwrite live content. Back up the framework state, purchase journal, admin grants, active catalog, game DB and persistent keys together. See [operations](operations.md).
+
+Both services accept the same subset of `1,2,4`: NX Credit, Maple Points and NX Prepaid. Selected balances never combine or fall back. Other currencies require an authoritative wallet adapter. `AUTH_MODE=bridge` and `CARD_BRIDGE_SESSION_SOURCE=bridge` use native website login. Existing portal mode requires its own verified `web_sessions` authority.
+
+Keep `STATE_KEY`, `CODE_ENCRYPTION_KEY`, both code-index keys, the shared signing key and `CSRF_KEY` stable. Enabling the supported Series One reward provider is a separate opt-in operation; see [code rules](code-rules.md). Do not disable the game adapter while bridge debits or pending reward saves exist.
+
+Qualify MySQL restart, lease-loss recovery, duplicate purchases and stopped-writer restore before taking player funds. If rewards are enabled, verify actual Cash Shop redemption, inventory-full rejection, wrong account, duplicate redemption and saved-item/USED agreement with a real v83 client. Compilation and HTTP tests do not replace that gameplay check.

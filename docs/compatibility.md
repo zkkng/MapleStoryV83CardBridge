@@ -7,7 +7,7 @@ The framework runtime archive and integrity are pinned in package.json and the l
 ## Qualified source and contract checks
 
 - Installer anchors, repeat installation and Java 21 compilation against the pinned unmodified upstream source.
-- Stock Cosmic's 1,886 tests and nine added adapter tests: 1,895 passing tests with the adapter tests isolated in a separate JVM.
+- The pinned Cosmic source passes 1,917 tests across twelve suites, including 31 adapter contract cases.
 - SQL-backed reward/item/USED/outbox commit, failed-save retry, account ownership and immutable registration.
 - Independent spending from all three cash balances, changed-type replay rejection and insufficient selected funds.
 - Native account-session creation, lookup, revocation and password compatibility.
@@ -24,8 +24,10 @@ These backend checks do not establish real-client coupon rendering or redemption
 
 ## Runtime checks for your server
 
-SQL tests use H2 in MySQL compatibility mode and mocked packet/character boundaries. They verify adapter transitions but do not prove real client rendering, MySQL lock behavior under your deployment, or every character-save extension in a fork.
+Most SQL contract tests use H2 in MySQL compatibility mode and mocked packet/character boundaries. Sixteen separate MySQL 8.4.11/Connector-J 9.3.0 checks cover existing-account receipt barriers, claim acknowledgement reconciliation and wallet retry under repeatable-read and read-committed isolation. These checks do not establish full connection-pool, character inventory, process supervision or real-client behavior.
 
 Before enabling player purchases, complete the starter workflow with a disposable real account and v83 client: all accepted balances, the reward-free Shapes pack, game restart, bridge restart and purchase recovery. If enabling rewards, also check ordinary and pet rewards, full inventory rejection, repeat redemption and a temporarily unavailable callback. Confirm that each saved item and USED receipt agree. Keep your installed code revision and configuration together when diagnosing an issue.
 
 The process model is one bridge writer and one enabled Cosmic process per installation. Distributed game writers are outside this profile. The framework uses an encrypted whole-state SQLite store with bounded capacity; it is not a distributed transaction service. Do not run two bridge services against the same state files.
+
+Production payment qualification remains incomplete. Successful game debits can precede allocation failures caused by stock, generators or storage capacity; the current bridge preserves pending work but has no automatic compensation protocol. Use test accounts and test cash until that boundary is resolved. Current bounded collection responses still materialize whole collections internally and are not a large-installation throughput qualification.

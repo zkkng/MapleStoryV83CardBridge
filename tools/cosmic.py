@@ -11,9 +11,12 @@ import os
 import re
 import secrets
 import shutil
+import shlex
+import sqlite3
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -21,9 +24,27 @@ import urllib.parse
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "deployment/cosmic"
 RUNTIME = json.loads((TEMPLATES / "runtime.json").read_text(encoding="utf-8"))
+PRIVATE_BACKUP_FILES = (
+    "config.yaml",
+    "database.env",
+    "game.env",
+    "cards.env",
+    "catalog.json",
+    "test-account.json",
+)
 
 
-def run(command, *, cwd=None, data=None, capture=False):
+class ActivationError(RuntimeError):
+    """Ingress reopened; retain current data rather than restoring over new transactions."""
+
+
+class CommandError(RuntimeError):
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
+
+
+def run(command, *, cwd=None, data=None, capture=False, structured_error=False):
     result = subprocess.run(
         command,
         cwd=cwd,
@@ -39,8 +60,25 @@ def run(command, *, cwd=None, data=None, capture=False):
                 if isinstance(result.stderr, bytes)
                 else result.stderr
             )
-        raise RuntimeError(
-            "Command failed: " + command[0] + ". Inspect the service or build logs."
+        code = None
+        if structured_error:
+            stderr = result.stderr[-4096:]
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            lines = stderr.rstrip().splitlines()
+            if lines and len(lines[-1]) <= 2048:
+                try:
+                    value = json.loads(lines[-1])
+                    candidate = value.get("code") if isinstance(value, dict) else None
+                    if isinstance(candidate, str) and re.fullmatch(
+                        r"[A-Z][A-Z0-9_]{0,80}", candidate
+                    ):
+                        code = candidate
+                except ValueError:
+                    pass
+        raise CommandError(
+            "Command failed: " + command[0] + ". Inspect the service or build logs.",
+            code,
         )
     if capture:
         return result.stdout
@@ -152,39 +190,50 @@ def managed_catalog(series_one=False, source=None):
             "The managed catalog input must contain collectibles only; use --series-one to add the supplied code insert."
         )
     if series_one:
-        line = catalog["lines"][0]["id"]
-        catalog["cards"].append(
-            {
-                "id": "series-one-code",
-                "lineId": line,
-                "name": "Series One code card",
-                "type": "code",
-                "behavior": {"tradable": False, "albumEligible": True},
-            }
-        )
-        catalog["variants"].append(
-            {
-                "id": "series-one-code.standard",
-                "cardId": "series-one-code",
-                "rarityId": catalog["rarities"][0]["id"],
-                "codes": [
-                    {
-                        "id": "game",
-                        "poolId": "v83.series-one",
-                        "reveal": "peel",
-                        "transfer": "block",
-                        "title": "Series One reward",
-                    }
-                ],
-            }
-        )
+        primary = catalog["lines"][0]["id"]
+        inserts = {}
+        for product in catalog["products"]:
+            line = product["lineId"]
+            if line in inserts:
+                continue
+            code_id = "series-one-code" + (
+                ""
+                if line == primary
+                else "-" + hashlib.sha256(line.encode("utf-8")).hexdigest()[:16]
+            )
+            inserts[line] = code_id + ".standard"
+            catalog["cards"].append(
+                {
+                    "id": code_id,
+                    "lineId": line,
+                    "name": "Series One code card",
+                    "type": "code",
+                    "behavior": {"tradable": False, "albumEligible": True},
+                }
+            )
+            catalog["variants"].append(
+                {
+                    "id": inserts[line],
+                    "cardId": code_id,
+                    "rarityId": catalog["rarities"][0]["id"],
+                    "codes": [
+                        {
+                            "id": "game",
+                            "poolId": "v83.series-one",
+                            "reveal": "peel",
+                            "transfer": "block",
+                            "title": "Series One reward",
+                        }
+                    ],
+                }
+            )
         for product in catalog["products"]:
             product["slots"].append(
                 {
                     "id": "series-one-insert",
                     "role": "insert",
                     "count": 1,
-                    "pool": [{"variantId": "series-one-code.standard", "weight": 1}],
+                    "pool": [{"variantId": inserts[product["lineId"]], "weight": 1}],
                 }
             )
     return catalog
@@ -211,7 +260,13 @@ def bridge_snapshot(directory):
         if (ROOT / name).is_file():
             shutil.copy2(ROOT / name, destination / name)
     (destination / "tools").mkdir(exist_ok=True)
-    shutil.copy2(ROOT / "tools/doctor.mjs", destination / "tools/doctor.mjs")
+    for name in ["doctor.mjs", "admin.mjs", "rewards.mjs"]:
+        shutil.copy2(ROOT / "tools" / name, destination / "tools" / name)
+    # Only distributable source enters this directory; container users must read it
+    # independently of the operator's private installation umask.
+    destination.chmod(0o755)
+    for path in destination.rglob("*"):
+        path.chmod(0o755 if path.is_dir() else 0o644)
     digest = hashlib.sha256()
     for path in sorted(destination.rglob("*")):
         if path.is_file():
@@ -230,7 +285,14 @@ def bridge_snapshot(directory):
 def create_compose(meta, images):
     project = meta["project"]
     private = "./private/"
-    shared = {"security_opt": ["no-new-privileges:true"], "restart": "unless-stopped"}
+    shared = {
+        "security_opt": ["no-new-privileges:true"],
+        "restart": "unless-stopped",
+        "logging": {
+            "driver": "json-file",
+            "options": {"max-size": "10m", "max-file": "3"},
+        },
+    }
     return {
         "name": project,
         "services": {
@@ -304,6 +366,7 @@ def create_compose(meta, images):
                 "volumes": [
                     "card_state:/opt/card/state",
                     private + "catalog.json:/opt/card/catalog.json:ro",
+                    "./media:/assets:ro",
                 ],
                 "tmpfs": ["/tmp:size=16m"],
                 "healthcheck": {
@@ -533,6 +596,7 @@ def install(args):
                 "CSRF_KEY=" + keys["csrf"],
                 "STATE_DIRECTORY=/opt/card/state",
                 "CATALOG_PATH=/opt/card/catalog.json",
+                "ASSET_ROOT=/assets",
                 "AUTH_MODE=bridge",
                 "PORT=8487",
                 "ACCEPTED_CASH_TYPES=1,2,4",
@@ -628,7 +692,19 @@ def finish_install(directory, meta, args):
         print(
             "Disposable CardTest account details saved in private/test-account.json; one pack was purchased for verification."
         )
-    print("Ready: " + meta["origin"] + "/library/", flush=True)
+    print("Website: " + meta["origin"] + "/library/", flush=True)
+    grants = admin_command(directory, "list", capture=True)
+    if not grants.get("items"):
+        command = "python3 tools/cosmic.py --directory " + shlex.quote(str(directory))
+        print("Owner setup incomplete: no website administrator has been granted.")
+        print("Create an ordinary account: " + command + " account create Owner")
+        print("Grant website administration: " + command + " admin grant Owner")
+    print("Private configuration: " + str(directory / "private"))
+    print(
+        "Check services: python3 tools/cosmic.py --directory "
+        + shlex.quote(str(directory))
+        + " doctor"
+    )
     (directory / "setup.pending.json").unlink(missing_ok=True)
     (directory / "private/setup-keys.json").unlink(missing_ok=True)
 
@@ -649,7 +725,12 @@ def doctor(directory, meta):
     print("Ready: " + meta["origin"] + "/library/", flush=True)
 
 
-def start(directory, meta):
+def start(directory, meta, *, allow_recovery=False):
+    if not allow_recovery and (directory / "recovery.pending.json").exists():
+        raise RuntimeError(
+            "This disaster recovery is incomplete. Inspect the preserved recovery directory and backup before exposing services."
+        )
+    ensure_media(directory)
     compose(directory, "up", "-d", "--wait", "db", "network")
     proxy = directory / "support/nginx.conf"
     text = proxy.read_text(encoding="utf-8")
@@ -667,7 +748,7 @@ def start(directory, meta):
         ).strip()
         ipaddress.IPv4Address(gateway)
         proxy.write_text(text.replace("__DOCKER_GATEWAY__", gateway), encoding="utf-8")
-    compose(directory, "up", "-d", "--wait", "--wait-timeout", "900")
+    compose(directory, "up", "-d", "--no-build", "--wait", "--wait-timeout", "900")
     doctor(directory, meta)
 
 
@@ -688,19 +769,50 @@ def account_command(directory, value):
         raise RuntimeError("The operator account action did not confirm completion.")
 
 
+def admin_command(directory, action, username=None, capture=False, account_id=None):
+    args = ["exec", "-T", "cards", "node", "tools/admin.mjs", action]
+    if username:
+        args.append(username)
+    if account_id is not None:
+        args.extend(["--account-id", str(account_id)])
+    result = compose(directory, *args, capture=True)
+    value = json.loads(result)
+    if capture:
+        return value
+    print(json.dumps(value, indent=2))
+
+
 def smoke(directory, meta):
+    if not (directory / "private/test-account.json").is_file():
+        raise RuntimeError(
+            "Smoke requires the installation's disposable account; install with --test-account."
+        )
     account = json.loads(
         (directory / "private/test-account.json").read_text(encoding="utf-8")
     )
     # Run where the game and bridge run; public DNS/TLS can be checked separately with doctor.
     script = """
-const origin=process.env.PUBLIC_ORIGIN,base='http://127.0.0.1:8487';
+import{existsSync,readFileSync,openSync,writeFileSync,fsyncSync,closeSync,renameSync}from'node:fs';
+import{DatabaseSync}from'node:sqlite';import{createGameClient}from'./src/protocol.mjs';
+const origin=process.env.PUBLIC_ORIGIN,base='http://127.0.0.1:8487',path=process.env.STATE_DIRECTORY+'/smoke-receipt.json';
+function save(receipt){const temporary=path+'.pending';const fd=openSync(temporary,'w',0o600);try{writeFileSync(fd,JSON.stringify(receipt));fsyncSync(fd)}finally{closeSync(fd)}renameSync(temporary,path);const dir=openSync(process.env.STATE_DIRECTORY,'r');try{fsyncSync(dir)}finally{closeSync(dir)}}
 let cookie='',csrf='';
 const input=JSON.parse(await new Promise(resolve=>{let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>resolve(s))}));
 async function call(route,body){const r=await fetch(base+'/api/library/'+route,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json','X-CSRF-Token':csrf},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(15000)});const v=await r.json();if(!r.ok)throw Error(v.code??'SMOKE_FAILED');if(r.headers.get('set-cookie'))cookie=r.headers.get('set-cookie').split(';')[0];if(v.csrf)csrf=v.csrf;return v;}
-await call('session');await call('login',{username:input.username,password:input.password});let s=await call('state');let pack=s.packs[0]??s.orders.find(o=>o.state==='complete')?.result?.packs?.[0];
-if(!pack){const catalog=await call('catalog'),quote=await call('quote',{productId:catalog.products[0].id,quantity:1,cashType:4}),key='setup-smoke-v1';const bought=await call('buy',{...quote,key});const replay=await call('buy',{...quote,key});if(JSON.stringify(bought)!==JSON.stringify(replay))throw Error('RETRY_MISMATCH');pack=bought.packs[0];}
-const opened=await call('open',{packId:pack.id,key:'setup-open-'+pack.id});if(opened.cards.length!==input.collectibles+(input.seriesOne?1:0))throw Error('PACK_CONTENTS');s=await call('state');if(s.inventory.filter(c=>c.definition.type!=='code').length!==input.collectibles||s.codes.length!==(input.seriesOne?1:0))throw Error('PACK_CONTENTS');if(input.seriesOne){if(s.codes[0].registration!=='ready')throw Error('REGISTRATION');const revealed=await call('reveal',{codeId:s.codes[0].id,key:'setup-reveal-'+s.codes[0].id});if(!/^(C0[123])?[A-Z2-9]{15}$/.test(revealed.code))throw Error('CODE_PATTERN');}await call('logout',{});if((await call('session')).signedIn)throw Error('LOGOUT');console.log('Setup smoke passed: native login, selected debit, safe retry, profile contents and logout.');
+await call('session');await call('login',{username:input.username,password:input.password});
+let receipt=existsSync(path)?JSON.parse(readFileSync(path,'utf8')):null;
+if(receipt&&receipt.username!==input.username)throw Error('SMOKE_ACCOUNT_MISMATCH');
+if(!receipt){const game=createGameClient({url:process.env.GAME_URL,secret:process.env.GAME_SHARED_KEY}),person=await game('/resolve-account',{name:input.username}),db=new DatabaseSync(process.env.STATE_DIRECTORY+'/bridge.sqlite',{readOnly:true});let legacy;try{const row=db.prepare('SELECT body FROM orders WHERE account_id=? AND request_key=?').get(person.accountId,'setup-smoke-v1');legacy=row?JSON.parse(row.body):null}finally{db.close()}if(legacy){receipt={format:1,username:input.username,quote:legacy.quote,key:'setup-smoke-v1',expected:input.collectibles+(input.seriesOne?1:0)};save(receipt)}}
+if(!receipt){const catalog=await call('catalog'),product=catalog.products.find(p=>p.enabled!==false);if(!product)throw Error('NO_SMOKE_OFFER');const quote=await call('quote',{productId:product.id,quantity:1,cashType:4});receipt={format:1,username:input.username,quote,key:'setup-smoke-v2',expected:product.slots.reduce((n,s)=>n+s.count,0)};save(receipt)}
+const bought=await call('buy',{...receipt.quote,key:receipt.key}),replay=await call('buy',{...receipt.quote,key:receipt.key});
+if(JSON.stringify(bought)!==JSON.stringify(replay))throw Error('RETRY_MISMATCH');
+const pack=bought.packs[0];if(receipt.packId&&receipt.packId!==pack.id)throw Error('SMOKE_PACK_MISMATCH');receipt.packId=pack.id;save(receipt);
+const opened=await call('open',{packId:pack.id,key:'setup-open-'+pack.id});if(opened.cards.length!==receipt.expected)throw Error('PACK_CONTENTS');
+const ids=opened.cards.map(c=>c.id).sort();if(receipt.cardIds&&JSON.stringify(receipt.cardIds)!==JSON.stringify(ids))throw Error('SMOKE_CARD_MISMATCH');receipt.cardIds=ids;save(receipt);
+const ownCodes=[];let after='';do{const page=await call('codes',{after,limit:50});ownCodes.push(...page.items.filter(c=>ids.includes(c.copyId)));after=page.next??''}while(after&&ownCodes.length<opened.cards.filter(c=>c.definition.type==='code').length);
+if(ownCodes.length!==opened.cards.filter(c=>c.definition.type==='code').length)throw Error('CODE_OWNERSHIP');
+for(const code of ownCodes){if(code.registration!=='ready')throw Error('REGISTRATION');const revealed=await call('reveal',{codeId:code.id,key:'setup-reveal-'+code.id});if(!/^(C0[123])?[A-Z2-9]{15}$/.test(revealed.code))throw Error('CODE_PATTERN')}
+await call('logout',{});if((await call('session')).signedIn)throw Error('LOGOUT');console.log('Setup smoke passed: only its durable purchase, pack and card identities were verified.');
 """
     compose(
         directory,
@@ -733,7 +845,120 @@ def no_players(directory):
         raise RuntimeError("Game accounts are connected. Maintenance was not started.")
 
 
-def backup(directory, meta, restart=True):
+def ensure_media(directory):
+    path = directory / "media"
+    if path.is_symlink() or path.resolve() != directory.resolve() / "media":
+        raise RuntimeError("Managed media directory must not be a symbolic link.")
+    path.mkdir(mode=0o755, exist_ok=True)
+    path.chmod(0o755)
+    return path
+
+
+def media_name(name, directory=False):
+    pattern = r"(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+" + (
+        r"" if directory else r"\.(?:png|jpg|jpeg|webp)"
+    )
+    return bool(re.fullmatch(pattern, name))
+
+
+def archive_media(directory, destination):
+    root = ensure_media(directory)
+    paths = sorted(root.rglob("*"))
+    total = 0
+    for path in paths:
+        name = path.relative_to(root).as_posix()
+        if (
+            path.is_symlink()
+            or not path.resolve().is_relative_to(root)
+            or not media_name(name, path.is_dir())
+            or (not path.is_file() and not path.is_dir())
+        ):
+            raise RuntimeError(
+                "Media must contain only safe raster files and ordinary directories."
+            )
+        if path.is_file():
+            size = path.stat().st_size
+            total += size
+            if size > 32 * 1024 * 1024 or total > 512 * 1024 * 1024:
+                raise RuntimeError(
+                    "Managed media exceeds its 32 MiB per-file or 512 MiB total backup limit."
+                )
+    with tarfile.open(destination, "w:gz") as archive:
+        for path in paths:
+            archive.add(
+                path, arcname=path.relative_to(root).as_posix(), recursive=False
+            )
+    destination.chmod(0o600)
+
+
+def validate_media_archive(path):
+    seen, total = set(), 0
+    with tarfile.open(path) as archive:
+        for member in archive:
+            total += member.size
+            if (
+                not media_name(member.name, member.isdir())
+                or member.name in seen
+                or not (member.isfile() or member.isdir())
+                or member.size > 32 * 1024 * 1024
+                or total > 512 * 1024 * 1024
+            ):
+                raise RuntimeError("Unexpected or oversized media archive member.")
+            seen.add(member.name)
+
+
+def restore_media(directory, source):
+    root = ensure_media(directory)
+    archive = source / "media.tar.gz"
+    if archive.exists():
+        validate_media_archive(archive)
+    if root.resolve() != directory.resolve() / "media":
+        raise RuntimeError("Unsafe media restore directory.")
+    shutil.rmtree(root)
+    root.mkdir(mode=0o755)
+    if archive.exists():
+        with tarfile.open(archive) as files:
+            for member in files:
+                destination = root / member.name
+                if member.isdir():
+                    destination.mkdir(mode=0o755, parents=True, exist_ok=True)
+                else:
+                    destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                    with files.extractfile(member) as incoming, destination.open(
+                        "wb"
+                    ) as outgoing:
+                        shutil.copyfileobj(incoming, outgoing)
+        for path in root.rglob("*"):
+            path.chmod(0o755 if path.is_dir() else 0o644)
+
+
+def pending_guard_script():
+    return r"""
+import{copyFileSync,lstatSync,mkdtempSync,rmSync}from'node:fs';
+import{join}from'node:path';import{tmpdir}from'node:os';import{DatabaseSync}from'node:sqlite';
+let temporary,database;
+try{
+ const source=process.argv[1]??'/opt/card/state';
+ temporary=mkdtempSync(join(process.argv[2]??tmpdir(),'card-pending-'));
+ let bytes=0;
+ for(const name of ['bridge.sqlite','bridge.sqlite-wal']){
+  const path=join(source,name);let info;
+  try{info=lstatSync(path)}catch(error){if(name.endsWith('-wal')&&error.code==='ENOENT')continue;throw error}
+  if(!info.isFile()||(bytes+=info.size)>256*1024*1024)throw Error('INVALID_PENDING_STATE');
+  copyFileSync(path,join(temporary,name));
+ }
+ // The source stays read-only. SQLite rebuilds its WAL index only in this private copy.
+ database=new DatabaseSync(join(temporary,'bridge.sqlite'),{readOnly:true});
+ console.log(database.prepare("SELECT COUNT(*) AS n FROM orders WHERE state NOT IN ('complete','rejected')").get().n);
+}catch{
+ console.error(JSON.stringify({code:'PENDING_STATE_UNAVAILABLE'}));process.exitCode=1;
+}finally{
+ database?.close();if(temporary)rmSync(temporary,{recursive:true,force:true});
+}
+"""
+
+
+def backup(directory, meta, restart=True, require_resolved=False):
     no_players(directory)
     destination = (
         directory
@@ -741,10 +966,48 @@ def backup(directory, meta, restart=True):
         / (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + secrets.token_hex(3))
     )
     destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+    archive_media(directory, destination / "media.tar.gz")
     image = compose(directory, "images", "-q", "cards", capture=True).strip()
-    compose(directory, "stop", "web", "cards", "cosmic")
     success = False
+    stage = "writer shutdown"
+    failure = None
     try:
+        compose(directory, "stop", "web", "cards", "cosmic")
+        stage = "stopped game-account check"
+        no_players(directory)
+        if require_resolved:
+            stage = "stopped pending-purchase check"
+            pending = run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--tmpfs",
+                    "/tmp:rw,noexec,nosuid,size=272m",
+                    "--user",
+                    "10002:10002",
+                    "--mount",
+                    "type=volume,source="
+                    + meta["project"]
+                    + "_card_state,target=/opt/card/state,readonly",
+                    "--entrypoint",
+                    "node",
+                    image,
+                    "--input-type=module",
+                    "-e",
+                    pending_guard_script(),
+                ],
+                capture=True,
+                structured_error=True,
+            ).strip()
+            if pending != "0":
+                raise RuntimeError(
+                    "Unresolved purchases remain at the stopped-writer boundary. Complete outstanding purchases before changing the installation."
+                )
+        stage = "game database dump"
         sql = compose(
             directory,
             "exec",
@@ -752,10 +1015,11 @@ def backup(directory, meta, restart=True):
             "db",
             "sh",
             "-c",
-            'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -u root --single-transaction --routines --events --triggers --hex-blob cosmic',
+            'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -u root --single-transaction --routines --events --triggers --hex-blob --databases cosmic --add-drop-database',
             capture=True,
         )
         private_file(destination / "database.sql", sql)
+        stage = "card state archive"
         state = run(
             [
                 "docker",
@@ -782,7 +1046,11 @@ def backup(directory, meta, restart=True):
             capture=True,
         )
         private_file(destination / "state.tar.gz", state)
-        shutil.copytree(directory / "private", destination / "private")
+        stage = "private configuration copy"
+        for name in PRIVATE_BACKUP_FILES:
+            path = directory / "private" / name
+            if path.is_file():
+                private_file(destination / "private" / name, path.read_bytes())
         for name in ["compose.json", "installation.json", "images.lock.json"]:
             shutil.copy2(directory / name, destination / name)
         (destination / "support").mkdir()
@@ -790,6 +1058,7 @@ def backup(directory, meta, restart=True):
             directory / "support/nginx.conf", destination / "support/nginx.conf"
         )
         profile = json.loads((directory / "compose.json").read_text(encoding="utf-8"))
+        stage = "runtime image inspection"
         images = {
             profile["services"][name]["image"]: run(
                 [
@@ -804,6 +1073,7 @@ def backup(directory, meta, restart=True):
             ).strip()
             for name in ["cosmic", "cards"]
         }
+        stage = "runtime image archive"
         run(
             [
                 "docker",
@@ -823,10 +1093,50 @@ def backup(directory, meta, restart=True):
             if p.is_file()
         }
         private_file(destination / "checksums.json", json.dumps(sums, indent=2) + "\n")
+        stage = "backup integrity validation"
+        validate_backup(destination)
         success = True
+    except Exception as error:
+        failure = error
     finally:
         if restart or not success:
-            start(directory, meta)
+            try:
+                start(directory, meta)
+            except Exception:
+                if success:
+                    raise RuntimeError(
+                        "Backup was created but service restart failed. Keep the private backup and inspect services: "
+                        + str(destination)
+                    ) from None
+                raise RuntimeError(
+                    "Backup failed during "
+                    + stage
+                    + " and service restart failed. Inspect services and retain the incomplete private backup: "
+                    + str(destination)
+                ) from None
+    if failure is not None:
+        code = getattr(failure, "code", None)
+        reason = (
+            " (" + code + ")"
+            if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,80}", code)
+            else ""
+        )
+        action = (
+            " Complete outstanding purchases before changing the installation."
+            if stage == "stopped pending-purchase check"
+            and isinstance(failure, RuntimeError)
+            and str(failure).startswith("Unresolved purchases")
+            else ""
+        )
+        raise RuntimeError(
+            "Backup failed during "
+            + stage
+            + reason
+            + "; previous services restarted."
+            + action
+            + " Incomplete private backup: "
+            + str(destination)
+        ) from None
     print("Private backup: " + str(destination))
     return destination
 
@@ -838,48 +1148,59 @@ def file_hash(path):
 
 def validate_backup(path):
     path = Path(path).resolve()
+    if (path / "checksums.json").is_symlink() or (
+        path / "checksums.json"
+    ).stat().st_size > 65536:
+        raise RuntimeError("Backup checksum manifest is invalid.")
     sums = json.loads((path / "checksums.json").read_text(encoding="utf-8"))
     allowed = {
         "database.sql",
         "state.tar.gz",
+        "media.tar.gz",
         "compose.json",
         "installation.json",
         "images.lock.json",
         "runtime-images.tar",
         "runtime-images.json",
         "support/nginx.conf",
-        "private/config.yaml",
-        "private/database.env",
-        "private/game.env",
-        "private/cards.env",
-        "private/catalog.json",
-        "private/test-account.json",
+        *("private/" + name for name in PRIVATE_BACKUP_FILES),
     }
-    if not set(sums) <= allowed or not {
-        "database.sql",
-        "state.tar.gz",
-        "compose.json",
-        "installation.json",
-        "images.lock.json",
-        "runtime-images.tar",
-        "runtime-images.json",
-        "support/nginx.conf",
-        "private/config.yaml",
-        "private/database.env",
-        "private/game.env",
-        "private/cards.env",
-        "private/catalog.json",
-    } <= set(sums):
+    if (
+        not isinstance(sums, dict)
+        or len(sums) > len(allowed)
+        or not set(sums) <= allowed
+        or not {
+            "database.sql",
+            "state.tar.gz",
+            "compose.json",
+            "installation.json",
+            "images.lock.json",
+            "runtime-images.tar",
+            "runtime-images.json",
+            "support/nginx.conf",
+            "private/config.yaml",
+            "private/database.env",
+            "private/game.env",
+            "private/cards.env",
+            "private/catalog.json",
+        }
+        <= set(sums)
+    ):
         raise RuntimeError("Unexpected or incomplete backup files.")
     for name, expected in sums.items():
         p = path / name
         if (
-            p.is_symlink()
+            not isinstance(expected, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected)
+            or p.is_symlink()
             or not p.resolve().is_relative_to(path)
             or not p.is_file()
             or file_hash(p) != expected
         ):
             raise RuntimeError("Backup integrity check failed.")
+    actual = {p.relative_to(path).as_posix() for p in path.rglob("*") if p.is_file()}
+    if actual != set(sums) | {"checksums.json"}:
+        raise RuntimeError("Unexpected backup files outside the checksum manifest.")
     with tarfile.open(path / "state.tar.gz") as archive:
         allowed_state = {
             "framework.sqlite",
@@ -888,17 +1209,354 @@ def validate_backup(path):
             "bridge.sqlite",
             "bridge.sqlite-wal",
             "bridge.sqlite-shm",
+            "smoke-receipt.json",
+            "smoke-receipt.json.pending",
         }
+        seen = set()
+        total = 0
         for member in archive.getmembers():
             name = member.name.removeprefix("./")
             if member.isdir() and member.name in [".", "./"]:
                 continue
-            if not member.isfile() or name not in allowed_state:
+            total += member.size
+            if (
+                not member.isfile()
+                or name not in allowed_state
+                or name in seen
+                or total > 256 * 1024 * 1024
+            ):
                 raise RuntimeError("Unexpected state archive member.")
+            seen.add(name)
+        if not {"framework.sqlite", "bridge.sqlite"} <= seen:
+            raise RuntimeError(
+                "State archive must contain framework.sqlite and bridge.sqlite."
+            )
+    if (path / "media.tar.gz").exists():
+        validate_media_archive(path / "media.tar.gz")
+    validate_state_databases(path / "state.tar.gz")
     return path
 
 
-def restore_data(directory, meta, source):
+def validate_state_databases(path):
+    with tempfile.TemporaryDirectory(prefix="cosmic-backup-check-") as temporary:
+        root = Path(temporary)
+        with tarfile.open(path) as archive:
+            for member in archive:
+                name = member.name.removeprefix("./")
+                if member.isfile() and (
+                    name.endswith(".sqlite")
+                    or name.endswith(".sqlite-wal")
+                    or name.endswith(".sqlite-shm")
+                ):
+                    with archive.extractfile(member) as incoming, (root / name).open(
+                        "wb"
+                    ) as outgoing:
+                        shutil.copyfileobj(incoming, outgoing)
+                    (root / name).chmod(0o600)
+        for name, required in [
+            ("framework.sqlite", {"framework_state"}),
+            ("bridge.sqlite", {"orders", "registrations"}),
+        ]:
+            try:
+                con = sqlite3.connect((root / name).as_uri() + "?mode=ro", uri=True)
+                try:
+                    if con.execute("PRAGMA quick_check").fetchone()[
+                        0
+                    ] != "ok" or not required <= {
+                        row[0]
+                        for row in con.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        )
+                    }:
+                        raise RuntimeError(
+                            "Backup SQLite integrity or schema check failed."
+                        )
+                    if (
+                        name == "framework.sqlite"
+                        and con.execute(
+                            "SELECT COUNT(*) FROM framework_state WHERE id=1 AND length(body)>0"
+                        ).fetchone()[0]
+                        != 1
+                    ):
+                        raise RuntimeError("Backup framework state is missing.")
+                finally:
+                    con.close()
+            except sqlite3.Error:
+                raise RuntimeError(
+                    "Backup SQLite integrity or schema check failed."
+                ) from None
+
+
+def backup_identity(source):
+    saved = json.loads((source / "installation.json").read_text(encoding="utf-8"))
+    if (
+        saved.get("format") != 1
+        or not isinstance(saved.get("directory"), str)
+        or not Path(saved["directory"]).is_absolute()
+        or not re.fullmatch(r"cosmic-cards-[a-f0-9]{10}", saved.get("project", ""))
+        or not re.fullmatch(r"[a-f0-9]{64}", saved.get("bridgeHash", ""))
+        or not re.fullmatch(r"[a-f0-9]{40}", saved.get("cosmicRevision", ""))
+    ):
+        raise RuntimeError("Backup installation identity is invalid.")
+    profile = json.loads((source / "compose.json").read_text(encoding="utf-8"))
+    images = json.loads((source / "runtime-images.json").read_text(encoding="utf-8"))
+    expected = {profile["services"][name]["image"] for name in ["cosmic", "cards"]}
+    if (
+        profile.get("name") != saved["project"]
+        or set(images) != expected
+        or any(
+            not name.startswith(saved["project"] + ":")
+            or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest)
+            for name, digest in images.items()
+        )
+    ):
+        raise RuntimeError("Backup runtime identity differs from its installation.")
+    return saved
+
+
+def load_backup_images(source):
+    run(["docker", "image", "load", "--input", str(source / "runtime-images.tar")])
+    verify_backup_runtime_images(source)
+
+
+def verify_backup_runtime_images(source):
+    images = json.loads((source / "runtime-images.json").read_text(encoding="utf-8"))
+    for name, digest in images.items():
+        if (
+            run(
+                ["docker", "image", "inspect", name, "--format", "{{.Id}}"],
+                capture=True,
+            ).strip()
+            != digest
+        ):
+            raise RuntimeError("Backup runtime image identity differs.")
+
+
+def recover_empty(directory, source, expected_project, relocate=False, retry=False):
+    source = validate_backup(source)
+    saved = backup_identity(source)
+    if saved["project"] != expected_project:
+        raise RuntimeError("Backup belongs to a different installation project.")
+    target = Path(directory).absolute()
+    if (
+        target.is_symlink()
+        or target.resolve() != target
+        or target == target.parent
+        or target == Path.home()
+        or target == ROOT
+        or ROOT in target.parents
+    ):
+        raise RuntimeError(
+            "Choose a separate absolute recovery directory without symbolic links."
+        )
+    backup_digest = file_hash(source / "checksums.json")
+    resuming, preserve_current = False, False
+    if target.exists() and any(target.iterdir()):
+        if not retry:
+            raise RuntimeError(
+                "Disaster recovery requires an empty destination; no files were changed."
+            )
+        marker = target / "recovery.pending.json"
+        if not marker.is_file() or marker.is_symlink() or marker.stat().st_size > 4096:
+            raise RuntimeError("Retry requires an incomplete recovery marker.")
+        recovery = json.loads(marker.read_text(encoding="utf-8"))
+        current_directory, current = load(target)
+        profile = json.loads((target / "compose.json").read_text(encoding="utf-8"))
+        if (
+            current_directory != target
+            or current["project"] != saved["project"]
+            or recovery.get("project") != saved["project"]
+            or recovery.get("backupDigest") != backup_digest
+        ):
+            raise RuntimeError(
+                "Retry must use the exact recovery directory, project and verified backup."
+            )
+        if recovery.get("phase") == "activating":
+            preserve_current = True
+        elif (
+            recovery.get("phase") not in ["prepared", "validating"]
+            or profile["services"]["network"]["ports"]
+        ):
+            raise RuntimeError(
+                "Recovery phase is invalid or ingress may have opened before its recorded phase. Preserve current data."
+            )
+        resuming = True
+    elif retry:
+        raise RuntimeError("Retry requires the existing incomplete recovery directory.")
+    if not relocate and str(target) != saved["directory"]:
+        raise RuntimeError(
+            "Use the original directory or explicitly select --relocate."
+        )
+    if target == source or target in source.parents:
+        raise RuntimeError("Keep the backup outside the recovery destination.")
+    prerequisites()
+    containers = run(
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            "label=com.docker.compose.project=" + saved["project"],
+        ],
+        capture=True,
+    ).strip()
+    volumes = run(
+        [
+            "docker",
+            "volume",
+            "ls",
+            "-q",
+            "--filter",
+            "label=com.docker.compose.project=" + saved["project"],
+        ],
+        capture=True,
+    ).strip()
+    for suffix in ["_database", "_card_state"]:
+        volumes += run(
+            [
+                "docker",
+                "volume",
+                "ls",
+                "-q",
+                "--filter",
+                "name=^" + saved["project"] + suffix + "$",
+            ],
+            capture=True,
+        ).strip()
+    if (containers or volumes) and not resuming:
+        raise RuntimeError(
+            "This installation still has Docker resources. Use in-place restore or remove only its disposable resources first."
+        )
+    locks = json.loads((source / "images.lock.json").read_text(encoding="utf-8"))
+    if set(locks) != set(RUNTIME["images"]) or any(
+        not isinstance(v, str)
+        or not re.fullmatch(r"[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}", v)
+        for v in locks.values()
+    ):
+        raise RuntimeError("Backup public runtime image locks are invalid.")
+    if preserve_current:
+        if (
+            current["bridgeHash"] != saved["bridgeHash"]
+            or current["cosmicRevision"] != saved["cosmicRevision"]
+            or json.loads((target / "images.lock.json").read_text(encoding="utf-8"))
+            != locks
+        ):
+            raise RuntimeError(
+                "Activation retry must use the recorded runtime identity and image locks."
+            )
+        resume_recovery_activation(target, current, source, locks)
+        return
+    load_backup_images(source)
+    for name in ["database", "node", "web"]:
+        run(["docker", "pull", locks[name]])
+    recovered = {**saved, "directory": str(target)}
+    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target.chmod(0o700)
+    (target / "private").mkdir(mode=0o700, exist_ok=True)
+    ensure_media(target)
+    shutil.copytree(TEMPLATES, target / "support", dirs_exist_ok=True)
+    for file in (source / "private").iterdir():
+        if file.is_file():
+            private_file(target / "private" / file.name, file.read_bytes())
+    for name in ["config.yaml", "catalog.json"]:
+        (target / "private" / name).chmod(0o644)
+    private_file(target / "installation.json", json.dumps(recovered, indent=2) + "\n")
+    private_file(target / "images.lock.json", json.dumps(locks, indent=2) + "\n")
+    cold_profile = create_compose(recovered, locks)
+    cold_profile["services"]["network"]["ports"] = []
+    private_file(target / "compose.json", json.dumps(cold_profile, indent=2) + "\n")
+    private_file(target / ".gitignore", "*\n")
+    private_file(
+        target / "recovery.pending.json",
+        json.dumps(
+            {
+                "project": saved["project"],
+                "backupDigest": backup_digest,
+                "phase": "prepared",
+            }
+        )
+        + "\n",
+    )
+    try:
+        compose(target, "up", "-d", "--no-build", "--wait", "db", "network")
+        restore_data(target, recovered, source, restore_configuration=False)
+        (target / "recovery.pending.json").unlink()
+    except Exception as error:
+        try:
+            compose(target, "stop", "web", "cards", "cosmic", "network", "db")
+        except Exception:
+            raise RuntimeError(
+                "Disaster recovery failed and service shutdown also failed. Inspect Docker services; keep the backup and recovery directory for diagnosis."
+            ) from error
+        raise RuntimeError(
+            "Disaster recovery failed; services were stopped. Preserve the backup and inspect the recovery directory before retrying."
+        ) from error
+    print(
+        "Disaster recovery completed with original project, accounts, keys and balances: "
+        + str(target)
+    )
+
+
+def resume_recovery_activation(directory, meta, source, locks):
+    # This phase can include post-backup transactions. Do not import or copy any data.
+    verify_backup_runtime_images(source)
+    for suffix in ["_database", "_card_state"]:
+        run(
+            [
+                "docker",
+                "volume",
+                "inspect",
+                meta["project"] + suffix,
+                "--format",
+                "{{.Name}}",
+            ],
+            capture=True,
+        )
+    compose(directory, "up", "-d", "--no-build", "--wait", "db")
+    no_players(directory)
+    image = create_compose(meta, locks)["services"]["cards"]["image"]
+    run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "10002:10002",
+            "--mount",
+            "type=volume,source="
+            + meta["project"]
+            + "_card_state,target=/opt/card/state,readonly",
+            "--entrypoint",
+            "node",
+            image,
+            "--input-type=module",
+            "-e",
+            "import{DatabaseSync}from'node:sqlite';for(const [file,table]of[['framework.sqlite','framework_state'],['bridge.sqlite','orders']]){const db=new DatabaseSync('/opt/card/state/'+file,{readOnly:true});try{if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok'||!db.prepare(\"SELECT 1 FROM sqlite_master WHERE type='table' AND name=?\").get(table))throw Error('Current recovery state is unavailable')}finally{db.close()}}",
+        ],
+        capture=True,
+    )
+    try:
+        activate_configuration(directory, meta, create_compose(meta, locks))
+        (directory / "recovery.pending.json").unlink()
+    except Exception as error:
+        try:
+            compose(directory, "stop", "web", "cards", "cosmic", "network", "db")
+        except Exception:
+            raise RuntimeError(
+                "Activation retry and service shutdown failed. Current data and the recovery marker were preserved; inspect services before retrying."
+            ) from error
+        raise RuntimeError(
+            "Activation retry failed; services stopped, current data and the recovery marker preserved. Correct the fault and repeat the same recover --retry command."
+        ) from error
+    print(
+        "Recovery activation completed; current databases and transactions retained: "
+        + str(directory)
+    )
+
+
+def restore_data(directory, meta, source, restore_configuration=True):
     compose(directory, "stop", "web", "cards", "cosmic")
     # Database credentials do not change during restore; backups belong to this installation.
     if (directory / "private/database.env").read_bytes() != (
@@ -914,17 +1572,13 @@ def restore_data(directory, meta, source):
         for name, digest in images.items()
     ):
         raise RuntimeError("Unexpected backup runtime images.")
-    run(["docker", "image", "load", "--input", str(source / "runtime-images.tar")])
-    for name, digest in images.items():
-        if (
-            run(
-                ["docker", "image", "inspect", name, "--format", "{{.Id}}"],
-                capture=True,
-            ).strip()
-            != digest
-        ):
-            raise RuntimeError("Backup runtime image identity differs.")
-    sql = (source / "database.sql").read_bytes()
+    load_backup_images(source)
+    # Reset only the managed application's fixed database, including tables created
+    # after the backup. The restricted application user cannot modify other databases.
+    sql = (
+        b"DROP DATABASE IF EXISTS cosmic;\nCREATE DATABASE cosmic;\nUSE cosmic;\n"
+        + (source / "database.sql").read_bytes()
+    )
     compose(
         directory,
         "exec",
@@ -935,7 +1589,8 @@ def restore_data(directory, meta, source):
         'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql -u cosmic_app cosmic',
         data=sql,
     )
-    image = compose(directory, "images", "-q", "cards", capture=True).strip()
+    source_profile = json.loads((source / "compose.json").read_text(encoding="utf-8"))
+    image = source_profile["services"]["cards"]["image"]
     run(
         [
             "docker",
@@ -947,12 +1602,14 @@ def restore_data(directory, meta, source):
             "--user",
             "10002:10002",
             "--mount",
-            "type=volume,source=" + meta["project"] + "_card_state,target=/state",
+            "type=volume,source="
+            + meta["project"]
+            + "_card_state,target=/opt/card/state",
             "--entrypoint",
             "sh",
             image,
             "-c",
-            'find /state -maxdepth 1 -type f -name "*.sqlite*" -delete; tar -C /state -xzf -',
+            'find /opt/card/state -maxdepth 1 -type f \\( -name "*.sqlite*" -o -name "smoke-receipt.json*" \\) -delete; tar -C /opt/card/state -xzf -',
         ],
         data=(source / "state.tar.gz").read_bytes(),
     )
@@ -962,29 +1619,96 @@ def restore_data(directory, meta, source):
         )
     (directory / "private/config.yaml").chmod(0o644)
     (directory / "private/catalog.json").chmod(0o644)
-    private_file(directory / "compose.json", (source / "compose.json").read_bytes())
-    private_file(
-        directory / "installation.json", (source / "installation.json").read_bytes()
-    )
+    if restore_configuration:
+        private_file(directory / "compose.json", (source / "compose.json").read_bytes())
+        private_file(
+            directory / "installation.json", (source / "installation.json").read_bytes()
+        )
     private_file(
         directory / "images.lock.json", (source / "images.lock.json").read_bytes()
     )
-    (directory / "support/nginx.conf").write_bytes(
-        (source / "support/nginx.conf").read_bytes()
+    if restore_configuration:
+        (directory / "support/nginx.conf").write_bytes(
+            (source / "support/nginx.conf").read_bytes()
+        )
+    restore_media(directory, source)
+    profile = (
+        json.loads((directory / "compose.json").read_text(encoding="utf-8"))
+        if restore_configuration
+        else create_compose(
+            meta, json.loads((source / "images.lock.json").read_text(encoding="utf-8"))
+        )
     )
-    start(directory, meta)
+    activate_configuration(directory, meta, profile)
+
+
+def recreate_namespace(directory):
+    # Database data and its service stay intact; consumers must leave the old namespace first.
+    compose(directory, "stop", "web", "cards", "cosmic", "network")
+    compose(directory, "rm", "-f", "web", "cards", "cosmic", "network")
+
+
+def activate_configuration(directory, meta, profile):
+    staged = json.loads(json.dumps(profile))
+    staged["services"]["network"]["ports"] = []
+    private_file(directory / "compose.json", json.dumps(staged, indent=2) + "\n")
+    recovery_marker = directory / "recovery.pending.json"
+    if recovery_marker.exists():
+        recovery = json.loads(recovery_marker.read_text(encoding="utf-8"))
+        private_file(
+            recovery_marker,
+            json.dumps(
+                {
+                    **recovery,
+                    "phase": (
+                        "activating"
+                        if recovery.get("phase") == "activating"
+                        else "validating"
+                    ),
+                }
+            )
+            + "\n",
+        )
+    recreate_namespace(directory)
+    start(directory, meta, allow_recovery=True)
+    if recovery_marker.exists():
+        private_file(
+            recovery_marker, json.dumps({**recovery, "phase": "activating"}) + "\n"
+        )
+    private_file(directory / "compose.json", json.dumps(profile, indent=2) + "\n")
+    try:
+        recreate_namespace(directory)
+        start(directory, meta, allow_recovery=True)
+    except Exception as error:
+        try:
+            compose(directory, "stop", "web", "cards", "cosmic")
+        except Exception:
+            raise ActivationError(
+                "Ingress activation and service shutdown failed. Preserve current data and inspect services; no backup was restored."
+            ) from error
+        raise ActivationError(
+            "Ingress activation failed; services stopped and current data preserved. Correct configuration before starting; do not restore over new transactions."
+        ) from error
 
 
 def restore(directory, meta, source):
     source = validate_backup(source)
-    saved = json.loads((source / "installation.json").read_text(encoding="utf-8"))
+    saved = backup_identity(source)
     if saved["directory"] != str(directory) or saved["project"] != meta["project"]:
         raise RuntimeError("Restore this backup to its original installation only.")
     safety = backup(directory, meta, restart=False)
     try:
         restore_data(directory, saved, source)
-    except Exception:
-        restore_data(directory, meta, safety)
+    except ActivationError as error:
+        raise RuntimeError(str(error) + " Safety backup: " + str(safety)) from None
+    except Exception as error:
+        try:
+            restore_data(directory, meta, safety)
+        except Exception:
+            raise RuntimeError(
+                "Restore and rollback both failed. Keep services stopped and recover the safety backup: "
+                + str(safety)
+            ) from error
         raise RuntimeError(
             "Restore failed; the pre-restore backup was restored."
         ) from None
@@ -1028,6 +1752,24 @@ def upgrade(directory, meta):
         "bridgeHash": bridge_snapshot(directory),
         "seriesOneEnabled": rewards == "1",
     }
+    if not (directory / "cosmic/pom.xml").is_file():
+        game = directory / "cosmic"
+        if game.exists() and any(game.iterdir()):
+            raise RuntimeError(
+                "Recovered Cosmic source directory is incomplete; preserve it and choose a clean source checkout."
+            )
+        run(
+            [
+                "git",
+                "clone",
+                "--quiet",
+                "--no-checkout",
+                RUNTIME["cosmicRepository"],
+                str(game),
+            ]
+        )
+        run(["git", "-C", str(game), "checkout", "--quiet", meta["cosmicRevision"]])
+        secure_seed_account(game)
     run(
         [
             sys.executable,
@@ -1044,6 +1786,20 @@ def upgrade(directory, meta):
         ]
     )
     shutil.copytree(TEMPLATES, directory / "support", dirs_exist_ok=True)
+    config = (directory / "cosmic/config.yaml").read_text(encoding="utf-8")
+    (directory / "support/test-config.yaml").write_text(
+        configure_yaml(
+            config,
+            {
+                "DB_USER": "cosmic_app",
+                "DB_PASS": "",
+                "HOST": "127.0.0.1",
+                "LANHOST": "127.0.0.1",
+                "LOCALHOST": "127.0.0.1",
+            },
+        ),
+        encoding="utf-8",
+    )
     candidate = create_compose(new_meta, lock_images(directory))
     private_file(directory / "compose.json", json.dumps(candidate, indent=2) + "\n")
     try:
@@ -1052,7 +1808,7 @@ def upgrade(directory, meta):
         private_file(directory / "compose.json", json.dumps(previous, indent=2) + "\n")
         raise
     private_file(directory / "compose.json", json.dumps(previous, indent=2) + "\n")
-    safety = backup(directory, meta, restart=False)
+    safety = backup(directory, meta, restart=False, require_resolved=True)
     if "ENABLE_SERIES_ONE_REWARDS" not in settings:
         path = directory / "private/cards.env"
         private_file(
@@ -1062,16 +1818,175 @@ def upgrade(directory, meta):
             + rewards
             + "\n",
         )
-    private_file(directory / "compose.json", json.dumps(candidate, indent=2) + "\n")
+    if "ASSET_ROOT" not in settings:
+        path = directory / "private/cards.env"
+        private_file(
+            path, path.read_text(encoding="utf-8").rstrip() + "\nASSET_ROOT=/assets\n"
+        )
+    staged = json.loads(json.dumps(candidate))
+    staged["services"]["network"]["ports"] = []
+    private_file(directory / "compose.json", json.dumps(staged, indent=2) + "\n")
     private_file(directory / "installation.json", json.dumps(new_meta, indent=2) + "\n")
     try:
+        recreate_namespace(directory)
         start(directory, new_meta)
-    except Exception:
-        restore_data(directory, meta, safety)
+    except Exception as error:
+        try:
+            restore_data(directory, meta, safety)
+        except Exception:
+            raise RuntimeError(
+                "Upgrade and rollback both failed. Stop services and restore the safety backup: "
+                + str(safety)
+            ) from error
         raise RuntimeError(
             "Upgrade failed; previous images, keys and data were restored."
         ) from None
+    # No public game or website ingress was available during validation. From this point
+    # onward preserve new transactions even if the final ingress activation has a fault.
+    private_file(directory / "compose.json", json.dumps(candidate, indent=2) + "\n")
+    try:
+        recreate_namespace(directory)
+        start(directory, new_meta)
+    except Exception as error:
+        try:
+            compose(directory, "stop", "web", "cards", "cosmic")
+        except Exception:
+            raise RuntimeError(
+                "Upgrade ingress activation and service shutdown failed. Preserve candidate data and inspect services; no backup was restored. Safety backup: "
+                + str(safety)
+            ) from error
+        raise RuntimeError(
+            "Upgrade ingress activation failed; services stopped and candidate data preserved. Inspect configuration and run start; do not restore over new transactions. Safety backup: "
+            + str(safety)
+        ) from error
     print("Upgrade completed; catalog, issued codes and encryption keys retained.")
+
+
+def enable_series_one(directory, meta, products):
+    selected = products.split(",")
+    if (
+        not 1 <= len(selected) <= 1000
+        or len(set(selected)) != len(selected)
+        or any(
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}", p) for p in selected
+        )
+    ):
+        raise ValueError("Provide unique published pack IDs separated by commas.")
+    if any(
+        (directory / name).exists()
+        for name in ["setup.pending.json", "recovery.pending.json"]
+    ):
+        raise RuntimeError("Complete installation or recovery before enabling rewards.")
+    profile = json.loads((directory / "compose.json").read_text(encoding="utf-8"))
+    image = profile["services"]["cards"]["image"]
+    path = directory / "private/cards.env"
+    settings = path.read_text(encoding="utf-8")
+    flags = re.findall(r"(?m)^ENABLE_SERIES_ONE_REWARDS=([^\r\n]*)$", settings)
+    if len(flags) > 1 or (flags and flags[0] not in ["0", "1"]):
+        raise RuntimeError("Invalid Series One provider configuration.")
+    try:
+        run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--user",
+                "10002:10002",
+                "--entrypoint",
+                "node",
+                image,
+                "-e",
+                "require('node:fs').accessSync('tools/rewards.mjs')",
+            ]
+        )
+    except RuntimeError:
+        raise RuntimeError(
+            "Upgrade this managed installation to a release containing the reward setup tool first."
+        ) from None
+    safety = backup(directory, meta, restart=False, require_resolved=True)
+    updated = {**meta, "seriesOneEnabled": True}
+    try:
+        if flags:
+            configured = re.sub(
+                r"(?m)^ENABLE_SERIES_ONE_REWARDS=[^\r\n]*$",
+                "ENABLE_SERIES_ONE_REWARDS=1",
+                settings,
+            )
+        else:
+            configured = settings.rstrip() + "\nENABLE_SERIES_ONE_REWARDS=1\n"
+        private_file(path, configured)
+        result = json.loads(
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges:true",
+                    "--user",
+                    "10002:10002",
+                    "--mount",
+                    "type=volume,src="
+                    + meta["project"]
+                    + "_card_state,dst=/opt/card/state",
+                    "--env-file",
+                    str(path),
+                    "--entrypoint",
+                    "node",
+                    image,
+                    "tools/rewards.mjs",
+                    "enable-series-one",
+                    "--products",
+                    products,
+                    "--confirm-stopped",
+                ],
+                capture=True,
+                structured_error=True,
+            )
+        )
+        if (
+            not isinstance(result, dict)
+            or result.get("products") != selected
+            or not isinstance(result.get("changed"), bool)
+        ):
+            raise RuntimeError("Reward setup returned an invalid result.")
+        private_file(
+            directory / "installation.json", json.dumps(updated, indent=2) + "\n"
+        )
+        activate_configuration(directory, updated, profile)
+    except ActivationError as error:
+        raise RuntimeError(str(error) + " Safety backup: " + str(safety)) from None
+    except Exception as error:
+        code = getattr(error, "code", None)
+        reason = (
+            " (" + code + ")"
+            if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,80}", code)
+            else ""
+        )
+        try:
+            restore_data(directory, meta, safety)
+        except Exception:
+            raise RuntimeError(
+                "Reward setup"
+                + reason
+                + " and rollback both failed. Keep services stopped and recover the safety backup: "
+                + str(safety)
+            ) from error
+        raise RuntimeError(
+            "Reward setup failed"
+            + reason
+            + "; previous provider configuration, catalog and data were restored. Safety backup: "
+            + str(safety)
+        ) from None
+    print(json.dumps(result))
 
 
 def main():
@@ -1122,6 +2037,42 @@ def main():
         commands.add_parser(name)
     recover = commands.add_parser("restore")
     recover.add_argument("--backup", required=True)
+    disaster = commands.add_parser(
+        "recover", help="Restore a lost installation into an empty destination"
+    )
+    disaster.add_argument("--backup", required=True)
+    disaster.add_argument(
+        "--expect-project",
+        required=True,
+        help="Original project from the trusted backup installation.json",
+    )
+    disaster.add_argument(
+        "--relocate",
+        action="store_true",
+        help="Explicitly permit a different installation directory; retain project identity",
+    )
+    disaster.add_argument(
+        "--retry",
+        action="store_true",
+        help="Retry the recorded recovery; after activation preserve current data without reimporting the backup",
+    )
+    rewards = commands.add_parser(
+        "rewards", help="Configure optional game rewards for existing published packs"
+    )
+    rewards.add_argument("action", choices=["enable-series-one"])
+    rewards.add_argument(
+        "--products", required=True, help="Comma-separated published pack IDs"
+    )
+    admin = commands.add_parser(
+        "admin", help="Manage website administrators independently of game GM roles"
+    )
+    admin.add_argument("action", choices=["grant", "revoke", "list"])
+    admin.add_argument("username", nargs="?")
+    admin.add_argument(
+        "--account-id",
+        type=int,
+        help="Revoke a stale grant by numeric identity, without requiring an eligible native account",
+    )
     account = commands.add_parser("account")
     account.add_argument("action", choices=["create", "fund"])
     account.add_argument("username")
@@ -1135,6 +2086,11 @@ def main():
     args = parser.parse_args()
     if args.command == "install":
         install(args)
+        return
+    if args.command == "recover":
+        recover_empty(
+            args.directory, args.backup, args.expect_project, args.relocate, args.retry
+        )
         return
     directory, meta = load(args.directory)
     if args.command == "start":
@@ -1152,6 +2108,8 @@ def main():
         upgrade(directory, meta)
     elif args.command == "smoke":
         smoke(directory, meta)
+    elif args.command == "rewards":
+        enable_series_one(directory, meta, args.products)
     elif args.command == "account":
         value = {"action": args.action, "username": args.username}
         if args.action == "create":
@@ -1171,11 +2129,30 @@ def main():
             value["key"] = args.request_id
         account_command(directory, value)
         print("Operator account action completed.")
+    elif args.command == "admin":
+        if args.account_id is not None:
+            if (
+                args.action != "revoke"
+                or args.username is not None
+                or args.account_id < 1
+            ):
+                raise ValueError(
+                    "Use admin revoke --account-id POSITIVE_ID without an account name."
+                )
+        elif (args.action == "list") != (args.username is None):
+            raise ValueError("Use admin list, or admin grant/revoke ACCOUNT_NAME.")
+        admin_command(directory, args.action, args.username, account_id=args.account_id)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (RuntimeError, ValueError, OSError, urllib.error.URLError) as error:
+    except (
+        RuntimeError,
+        ValueError,
+        OSError,
+        urllib.error.URLError,
+        tarfile.TarError,
+    ) as error:
         print("Setup stopped: " + str(error), file=sys.stderr)
         sys.exit(1)

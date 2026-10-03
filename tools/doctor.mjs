@@ -13,7 +13,9 @@ try {
     !response.ok ||
     result.ok !== true ||
     result.gameReady !== true ||
-    result.callbackReady !== true
+    result.callbackReady !== true ||
+    result.leaseReady !== true ||
+    result.storage?.ok !== true
   )
     throw Error(result.code ?? "NOT_READY");
   if (process.env.GAME_SHARED_KEY && process.env.GAME_URL) {
@@ -22,7 +24,8 @@ try {
       secret: process.env.GAME_SHARED_KEY,
     });
     const health = await game("/health", {});
-    if (!health.callbackReady) throw Error("CALLBACK_UNAVAILABLE");
+    if (!health.callbackReady || !health.leaseReady)
+      throw Error("CALLBACK_OR_LEASE_UNAVAILABLE");
   }
   if (!quiet)
     console.log(

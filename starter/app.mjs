@@ -1,3 +1,4 @@
+import { createAdministration } from "./admin.mjs";
 const $ = (id) => document.getElementById(id);
 const esc = (v) =>
   String(v ?? "").replace(
@@ -20,12 +21,15 @@ let session = { signedIn: false },
   confirmedInput = null,
   refreshSequence = 0,
   syncing = false,
+  packsLoading = false,
+  available = false,
   displayedCards = new Map();
 const message = (text, error = false) => {
   $("status").textContent = text;
   $("status").classList.toggle("error", error);
 };
 async function api(route, value) {
+  const requestGeneration = generation;
   const res = await fetch("/api/library/" + route, {
     credentials: "same-origin",
     method: value === undefined ? "GET" : "POST",
@@ -45,7 +49,12 @@ async function api(route, value) {
   } catch {
     throw Error("The server is temporarily unavailable. Please try again.");
   }
-  if (res.status === 401 && route !== "login" && route !== "session") {
+  if (
+    res.status === 401 &&
+    requestGeneration === generation &&
+    route !== "login" &&
+    route !== "session"
+  ) {
     generation++;
     session = { signedIn: false };
     state = null;
@@ -53,11 +62,62 @@ async function api(route, value) {
     if (catalog) render();
     message("Your session expired. Sign in again to continue.", true);
   }
+  if (
+    res.status === 403 &&
+    requestGeneration === generation &&
+    route.startsWith("admin/")
+  ) {
+    session.role = "collector";
+    administration.clear();
+    message(
+      "Your administration access has changed. Collector access is still available.",
+      true,
+    );
+  }
   if (!res.ok)
     throw Object.assign(Error(data.error ?? "Please try again."), {
       code: data.code,
     });
   return data;
+}
+const administration = createAdministration({
+  api,
+  current: () => ({ session, generation, available }),
+  onPublish: refresh,
+});
+const dialogFocus = new Map();
+function showDialog(id) {
+  dialogFocus.set(id, document.activeElement);
+  $(id).showModal();
+}
+for (const id of ["detail", "confirm"]) {
+  $(id).addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    const controls = [
+      ...$(id).querySelectorAll(
+        "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex='0']",
+      ),
+    ].filter((e) => !e.hidden && e.getClientRects().length);
+    if (!controls.length) {
+      event.preventDefault();
+      return;
+    }
+    const first = controls[0],
+      last = controls.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  $(id).addEventListener("close", () => {
+    const previous = dialogFocus.get(id);
+    dialogFocus.delete(id);
+    if (previous?.isConnected && previous.getClientRects().length)
+      previous.focus();
+  });
 }
 const intentKey = () => "cosmic-pack:" + session.username;
 function intent() {
@@ -81,6 +141,8 @@ function saveIntent(value) {
 const rarity = (id) => catalog?.rarities.find((r) => r.id === id)?.name ?? id;
 const setName = (id) => catalog?.lines.find((l) => l.id === id)?.name ?? id;
 function clearPrivateViews() {
+  packsLoading = false;
+  administration.clear();
   $("opened").replaceChildren();
   $("detail").close();
   $("detail-content").replaceChildren();
@@ -96,8 +158,10 @@ function art(card) {
   const path = card.definition.metadata?.image;
   const valid =
     typeof path === "string" &&
-    (/^\/assets\/library\/[a-zA-Z0-9_./-]+\.(png|jpg|jpeg|webp)$/.test(path) ||
-      /^https:\/\/maplestoryitcg\.weebly\.com\/uploads\/[0-9/]+\/[a-zA-Z0-9_-]+\.(png|jpg|jpeg)$/.test(
+    (/^\/assets\/library\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.(png|jpg|jpeg|webp)$/.test(
+      path,
+    ) ||
+      /^https:\/\/maplestoryitcg\.weebly\.com\/uploads\/(?:\d+\/)+[a-zA-Z0-9_.-]+\.(png|jpg|jpeg)$/.test(
         path,
       ));
   return valid
@@ -123,23 +187,48 @@ function detail(id) {
   const card =
     displayedCards.get(id) ?? state?.inventory.find((c) => c.id === id);
   if (!card) return;
-  const owned =
-    state?.inventory.filter((c) => c.variantId === card.variantId).length ?? 0;
+  const owned = ownedCollection().get(card.variantId)?.count ?? 0;
   $("detail-content").innerHTML =
     `<p class="eyebrow">${esc(setName(card.definition.lineId))}</p><h2>${esc(card.definition.name)}</h2><div class="card-art">${art(card)}</div><dl><dt>Rarity</dt><dd>${esc(rarity(card.rarityId))}</dd><dt>Copies owned</dt><dd>${owned}</dd></dl>${card.definition.metadata?.description ? `<p>${esc(card.definition.metadata.description)}</p>` : ""}`;
   imageFallbacks($("detail-content"));
-  $("detail").showModal();
+  showDialog("detail");
+}
+function ownedCollection() {
+  if (Array.isArray(state?.collection?.items))
+    return new Map(
+      state.collection.items
+        .filter((row) => row.card?.definition?.type !== "code")
+        .map((row) => [row.variantId, { card: row.card, count: row.count }]),
+    );
+  const grouped = new Map();
+  for (const card of state?.inventory ?? []) {
+    if (card.definition.type === "code") continue;
+    const row = grouped.get(card.variantId);
+    if (row) row.count++;
+    else grouped.set(card.variantId, { card, count: 1 });
+  }
+  return grouped;
+}
+function collectionStats(grouped = ownedCollection()) {
+  return {
+    total:
+      state?.collection?.totalCards ??
+      [...grouped.values()].reduce((n, row) => n + row.count, 0),
+    unique: state?.collection?.uniqueCards ?? grouped.size,
+  };
+}
+function unopenedCount() {
+  return (
+    state?.packTotal ?? state?.packs.filter((p) => !p.openedAt).length ?? 0
+  );
 }
 function collection() {
-  const cards =
-    state?.inventory.filter((c) => c.definition.type !== "code") ?? [];
-  const grouped = new Map();
-  for (const c of cards) {
-    const row = grouped.get(c.variantId);
-    row ? row.count++ : grouped.set(c.variantId, { card: c, count: 1 });
-  }
+  if (!catalog) return;
+  const grouped = ownedCollection(),
+    totals = collectionStats(grouped);
+  const definitions = new Map(catalog.cards.map((card) => [card.id, card]));
   const available = catalog.variants.flatMap((v) => {
-    const definition = catalog.cards.find((c) => c.id === v.cardId);
+    const definition = definitions.get(v.cardId);
     if (!definition || definition.type === "code") return [];
     return [
       {
@@ -184,9 +273,9 @@ function collection() {
           : 0) || a.card.definition.name.localeCompare(b.card.definition.name),
   );
   displayedCards = new Map(rows.map((r) => [r.card.id, r.card]));
-  $("card-count").textContent = num(cards.length);
+  $("card-count").textContent = num(totals.total);
   $("collection-summary").textContent = session.signedIn
-    ? `${num(grouped.size)} unique cards · ${num(cards.length)} total`
+    ? `${num(totals.unique)} unique cards · ${num(totals.total)} total`
     : "Browse cards before you buy. Sign in to start collecting.";
   $("filter-summary").textContent =
     `${num(rows.length)} matching card${rows.length === 1 ? "" : "s"}`;
@@ -207,10 +296,10 @@ function collection() {
         .map((r) => cardMarkup(r.card, r.count))
         .join("")}</div>`
     : empty(
-        view === "owned" && !cards.length
+        view === "owned" && !totals.total
           ? "Your collection starts here"
           : "No matching cards",
-        view === "owned" && !cards.length
+        view === "owned" && !totals.total
           ? "Open your first pack to add cards, or browse all cards in the catalog."
           : "Try a different view, search or filter.",
       );
@@ -304,6 +393,7 @@ function total() {
   $("quantity").max = product?.maxQuantity ?? 1;
   const valid =
     product &&
+    productAvailable(product) &&
     Number.isSafeInteger(quantity) &&
     quantity >= 1 &&
     quantity <= product.maxQuantity;
@@ -316,29 +406,60 @@ function total() {
       ? `Available: ${num(balance.amount)} ${balance.name}${valid && amount <= balance.amount ? " · After purchase: " + num(balance.amount - amount) : ""}`
       : "";
   const pending =
-    state?.orders.some((o) => !["complete", "rejected"].includes(o.state)) ||
-    !!intent();
+    state?.orders.some(
+      (o) => !["complete", "rejected", "compensated"].includes(o.state),
+    ) || !!intent();
   $("pending").hidden = !session.signedIn || !pending;
   $("purchase").disabled =
     busy ||
     !session.signedIn ||
+    !available ||
     !valid ||
     !balance ||
     amount > balance.amount ||
     pending;
   $("purchase-note").textContent = !session.signedIn
     ? "Sign in to buy packs."
-    : pending
-      ? "Finish your saved purchase first."
-      : !valid
-        ? `Choose 1–${product?.maxQuantity ?? 1} packs.`
-        : !balance
-          ? "Choose an accepted balance."
-          : amount > balance.amount
-            ? "Not enough funds in this balance."
-            : "";
+    : !available
+      ? "Purchases are paused until the game connection recovers."
+      : pending
+        ? "Finish your saved purchase first."
+        : !valid
+          ? `Choose 1–${product?.maxQuantity ?? 1} packs.`
+          : !balance
+            ? "Choose an accepted balance."
+            : amount > balance.amount
+              ? "Not enough funds in this balance."
+              : "";
+}
+function productAvailable(product) {
+  const now = Date.now();
+  return (
+    product.enabled !== false &&
+    product.available !== false &&
+    product.availability?.available !== false &&
+    product.availability?.state !== "out_of_stock" &&
+    (!product.availableFrom || now >= Date.parse(product.availableFrom)) &&
+    (!product.availableUntil || now < Date.parse(product.availableUntil))
+  );
+}
+function constrainedDraws(product, slot) {
+  const policy = product.duplicatePolicy;
+  return (
+    !!product.pity ||
+    (!!policy && policy !== "allow" && policy.scope !== "none") ||
+    (slot ? [slot] : product.slots).some((s) =>
+      s.pool.some(
+        (v) =>
+          catalog.variants.find((x) => x.id === v.variantId)?.supplyLimit !==
+          undefined,
+      ),
+    )
+  );
 }
 function render() {
+  if (!catalog) return;
+  administration.sync();
   $("hero-title").textContent = session.signedIn
     ? "Your card library"
     : "Your next favorite card is waiting in a pack.";
@@ -350,21 +471,20 @@ function render() {
   $("account-strip").hidden = !session.signedIn;
   $("header-wallet").innerHTML = walletMarkup();
   $("overview").hidden = !session.signedIn;
-  const ownedCards =
-    state?.inventory.filter((c) => c.definition.type !== "code") ?? [];
+  const owned = collectionStats();
   $("overview").innerHTML =
-    `<div><strong>${num(state?.packs.filter((p) => !p.openedAt).length ?? 0)}</strong><span>Packs to open</span></div><div><strong>${num(ownedCards.length)}</strong><span>Cards collected</span></div><div><strong>${num(new Set(ownedCards.map((c) => c.variantId)).size)}</strong><span>Unique cards</span></div>`;
+    `<div><strong>${num(unopenedCount())}</strong><span>Packs to open</span></div><div><strong>${num(owned.total)}</strong><span>Cards collected</span></div><div><strong>${num(owned.unique)}</strong><span>Unique cards</span></div>`;
   $("account").hidden = session.signedIn;
   $("signed-in").hidden = !session.signedIn;
   $("signin-link").hidden = session.signedIn;
   $("welcome").textContent = session.signedIn ? session.username : "";
   const selected = $("product").value,
     selectedType = $("cash-type").value;
-  $("product").innerHTML = catalog.products
+  const offers = catalog.products.filter(productAvailable);
+  $("product").innerHTML = offers
     .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`)
     .join("");
-  if (catalog.products.some((p) => p.id === selected))
-    $("product").value = selected;
+  if (offers.some((p) => p.id === selected)) $("product").value = selected;
   const accepted = state?.wallet.acceptedCashTypes ?? catalog.acceptedCashTypes;
   const balances = state?.wallet.balances ?? [
     { cashType: 1, name: "NX Credit" },
@@ -389,8 +509,8 @@ function render() {
         "Your game balances, in one place",
         "Sign in to see NX Credit, Maple Points, and NX Prepaid.",
       );
-  $("products").innerHTML = catalog.products.length
-    ? catalog.products
+  $("products").innerHTML = offers.length
+    ? offers
         .map(
           (p) =>
             `<article class="product"><div class="product-mark" aria-hidden="true">◇</div><h3>${esc(p.name)}</h3><p>${p.slots.reduce((n, s) => n + s.count, 0)} cards per pack · ${num(p.price.amount)} points</p><small>${esc(setName(p.lineId))} · Random cards, duplicates possible</small><div><button class="quiet" data-product="${esc(p.id)}">Choose this pack</button><button class="quiet" data-contents="${esc(p.id)}">View contents</button></div></article>`,
@@ -415,34 +535,58 @@ function render() {
         (b.onclick = () => {
           const p = catalog.products.find((p) => p.id === b.dataset.contents);
           $("detail-content").innerHTML =
-            `<h2>${esc(p.name)}</h2><p>Each slot draws independently. Duplicates are possible.</p>` +
+            `<h2>${esc(p.name)}</h2><p>${constrainedDraws(p) ? "This pack has draw constraints. Pool weights are relative preferences; actual chances can change with remaining supply and draw rules." : "Each slot draws independently. Duplicates are possible."}</p>` +
             p.slots
               .map(
                 (s) =>
                   `<h3>${s.count} ${s.role === "insert" ? "insert" : "card"}${s.count === 1 ? "" : "s"}</h3><ul>` +
                   s.pool
+                    .filter((entry) => {
+                      const variant = catalog.variants.find(
+                        (v) => v.id === entry.variantId,
+                      );
+                      return (
+                        variant &&
+                        variant.enabled !== false &&
+                        variant.remaining !== 0
+                      );
+                    })
                     .map((v) => {
                       const variant = catalog.variants.find(
                           (x) => x.id === v.variantId,
                         ),
                         c = catalog.cards.find((x) => x.id === variant?.cardId),
-                        weight = s.pool.reduce((n, r) => n + r.weight, 0);
-                      return `<li>${esc(c?.name)} · ${esc(rarity(variant?.rarityId))} · ${Number(((v.weight / weight) * 100).toFixed(2))}% per draw</li>`;
+                        weight = s.pool
+                          .filter((entry) => {
+                            const candidate = catalog.variants.find(
+                              (v) => v.id === entry.variantId,
+                            );
+                            return (
+                              candidate &&
+                              candidate.enabled !== false &&
+                              candidate.remaining !== 0
+                            );
+                          })
+                          .reduce((n, r) => n + r.weight, 0);
+                      const constrained = constrainedDraws(p, s);
+                      return `<li>${esc(c?.name)} · ${esc(rarity(variant?.rarityId))} · ${constrained ? "weight " + v.weight : Number(((v.weight / weight) * 100).toFixed(2)) + "% per draw"}</li>`;
                     })
                     .join("") +
                   "</ul>",
               )
               .join("");
-          $("detail").showModal();
+          showDialog("detail");
         }),
     );
   const packs = state?.packs.filter((p) => !p.openedAt) ?? [];
-  $("pack-count").textContent = num(packs.length);
+  $("pack-count").textContent = num(unopenedCount());
+  $("more-packs").hidden = !session.signedIn || !state?.packNext;
+  $("more-packs").disabled = packsLoading || !available;
   $("packs").innerHTML = packs.length
     ? packs
         .map(
           (p) =>
-            `<button class="pack" data-pack="${esc(p.id)}" ${opening.has(p.id) ? "disabled" : ""}><strong>${esc(catalog.products.find((v) => v.id === p.productId)?.name ?? "Pack")}</strong><span>${opening.has(p.id) ? "Opening…" : "Open pack →"}</span></button>`,
+            `<button class="pack" data-pack="${esc(p.id)}" ${opening.has(p.id) || !available ? "disabled" : ""}><strong>${esc(catalog.products.find((v) => v.id === p.productId)?.name ?? "Pack")}</strong><span>${opening.has(p.id) ? "Opening…" : "Open pack →"}</span></button>`,
         )
         .join("")
     : empty(
@@ -474,12 +618,31 @@ async function refresh() {
   const version = generation,
     sequence = ++refreshSequence;
   const current = () => version === generation && sequence === refreshSequence;
-  const next = await api("session");
+  const [publicResult, accountResult] = await Promise.allSettled([
+    api("catalog"),
+    api("session"),
+  ]);
+  if (publicResult.status !== "fulfilled") throw publicResult.reason;
+  const freshCatalog = publicResult.value;
   if (!current()) return;
-  const freshCatalog = await api("catalog");
+  catalog = freshCatalog;
+  let next, nextState;
+  try {
+    if (accountResult.status !== "fulfilled") throw accountResult.reason;
+    next = accountResult.value;
+    if (!current()) return;
+    nextState = next.signedIn ? await api("state") : null;
+  } catch (e) {
+    if (!current()) return;
+    available = false;
+    $("connection-notice").hidden = false;
+    render();
+    $("sync-status").textContent = "Connection paused · Retry connection";
+    return;
+  }
   if (!current()) return;
-  const nextState = next.signedIn ? await api("state") : null;
-  if (!current()) return;
+  available = true;
+  $("connection-notice").hidden = true;
   if (
     nextState?.owner &&
     nextState.owner.toLowerCase() !== next.username.toLowerCase()
@@ -501,7 +664,7 @@ async function refresh() {
   render();
 }
 async function openPack(id) {
-  if (busy || opening.has(id) || !session.signedIn) return;
+  if (busy || opening.has(id) || !session.signedIn || !available) return;
   const version = generation;
   opening.add(id);
   render();
@@ -526,7 +689,7 @@ async function openPack(id) {
   }
 }
 async function purchase(saved) {
-  if (busy || !session.signedIn) return;
+  if (busy || !session.signedIn || !available) return;
   busy = true;
   total();
   const version = generation;
@@ -609,6 +772,7 @@ $("logout").onclick = async () => {
   const previous = session;
   session = { signedIn: false, csrf: previous.csrf };
   state = null;
+  clearPrivateViews();
   render();
   $("opened").replaceChildren();
   $("detail").close();
@@ -643,6 +807,8 @@ $("refresh").onclick = async () => {
     total();
   }
 };
+$("connection-retry").onclick = () =>
+  refresh().catch((e) => message(e.message, true));
 $("buy").onsubmit = async (e) => {
   e.preventDefault();
   if ($("purchase").disabled) return;
@@ -676,7 +842,7 @@ $("buy").onsubmit = async (e) => {
     $("confirm-balance").textContent = balance
       ? `Available: ${num(balance.amount)} ${label} · After purchase: ${num(balance.amount - quote.price.amount)}`
       : "";
-    $("confirm").showModal();
+    showDialog("confirm");
   } catch (e) {
     if (version === generation) message(e.message, true);
   } finally {
@@ -723,6 +889,42 @@ $("more-cards").onclick = () => {
   collection();
 };
 $("code-filter").onchange = codes;
+$("more-packs").onclick = async () => {
+  if (packsLoading || !available || !session.signedIn || !state?.packNext)
+    return;
+  const version = generation,
+    sequence = refreshSequence,
+    button = $("more-packs");
+  packsLoading = true;
+  button.disabled = true;
+  try {
+    const page = await api("packs", { after: state.packNext, limit: 50 });
+    if (version !== generation || sequence !== refreshSequence) return;
+    const ids = new Set(state.packs.map((p) => p.id)),
+      added = page.items.filter((p) => !p.openedAt && !ids.has(p.id));
+    state.packs.push(...added);
+    state.packNext = page.next;
+    state.packTotal = page.total;
+    render();
+    if (!page.next && added.length) {
+      const first = [...$("packs").querySelectorAll("[data-pack]")].find(
+        (b) => b.dataset.pack === added[0].id,
+      );
+      first?.focus();
+    }
+    message(
+      `${num(state.packs.length)} of ${num(unopenedCount())} unopened packs loaded.`,
+    );
+  } catch (e) {
+    if (version === generation)
+      message(e.message + " Retry loading unopened packs.", true);
+  } finally {
+    if (version === generation) {
+      packsLoading = false;
+      button.disabled = !available;
+    }
+  }
+};
 $("more-codes").onclick = async () => {
   const version = generation;
   const button = $("more-codes");
@@ -763,8 +965,13 @@ async function backgroundRefresh() {
     busy ||
     syncing ||
     opening.size ||
+    packsLoading ||
     $("confirm").open ||
-    $("detail").open
+    $("detail").open ||
+    administration.hasDraft() ||
+    document.querySelector(".code-text") ||
+    (document.activeElement !== document.body &&
+      document.activeElement?.closest("#main"))
   )
     return;
   syncing = true;

@@ -900,6 +900,122 @@ dialog::backdrop {
 .authenticated .hero p {
   margin: 0;
 }
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 20px 0;
+}
+.admin-tabs [aria-pressed="true"] {
+  background: var(--green);
+  color: white;
+}
+.admin-editor-grid,
+.admin-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+.admin-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+.admin-form textarea {
+  min-height: 90px;
+  resize: vertical;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font: inherit;
+}
+.admin-form input[type="checkbox"] {
+  width: auto;
+  display: inline;
+  margin-right: 6px;
+}
+.admin-form fieldset {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.slot-weights {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+  padding: 8px 2px;
+}
+.admin-publish {
+  margin-top: 24px;
+}
+.admin-publish .actions,
+.admin-form button {
+  width: fit-content;
+  max-width: 100%;
+}
+#administration pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 12px;
+  padding: 14px;
+  background: #f5f7f1;
+  border-radius: 8px;
+}
+.form-status {
+  margin: 0;
+  min-height: 1.4em;
+  color: #8b341d;
+}
+.order-row {
+  border-top: 1px solid var(--border);
+  padding: 14px 0;
+  overflow-wrap: anywhere;
+}
+.order-row p {
+  margin: 6px 0;
+}
+#order-search {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+#connection-notice button {
+  white-space: normal;
+}
+@media (max-width: 800px) {
+  .admin-editor-grid,
+  .admin-summary {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 390px) {
+  .topbar {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .topbar button {
+    padding: 8px;
+  }
+  #signed-in {
+    flex-wrap: wrap;
+  }
+  .slot-weights {
+    grid-template-columns: 1fr;
+  }
+  .admin-publish .actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
 .filters {
   grid-template-columns: 1.3fr 1.6fr repeat(3, minmax(0, 1fr));
 }

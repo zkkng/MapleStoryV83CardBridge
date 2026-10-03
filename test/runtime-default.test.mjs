@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { SQLiteStore } from "@digital-card/framework/sqlite";
+import { CardFramework } from "@digital-card/framework";
+import { Journal } from "../src/journal.mjs";
 test("a fresh service starts with Shapes and no configured reward pool", async () => {
   const directory = mkdtempSync(join(tmpdir(), "card-default-runtime-"));
   const key = Buffer.alloc(32, 7),
@@ -74,6 +76,86 @@ test("a fresh service starts with Shapes and no configured reward pool", async (
       const exited = once(child, "exit");
       child.kill();
       await exited;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+test("restart uses the active catalog and administrator grants even when the bootstrap file is absent", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "card-catalog-authority-")),
+    key = Buffer.alloc(32, 7);
+  const store = new SQLiteStore(join(directory, "framework.sqlite"), {
+      encryptionKey: key,
+    }),
+    core = new CardFramework({ store });
+  const catalog = JSON.parse(
+    readFileSync(new URL("../data/catalog.example.json", import.meta.url)),
+  );
+  catalog.version = 19;
+  catalog.products[0].price.amount = 1700;
+  core.publishCatalog({ role: "admin" }, catalog);
+  core.close();
+  const journal = new Journal(join(directory, "bridge.sqlite"));
+  journal.grant({ accountId: 17, name: "Owner" }, true);
+  journal.close();
+  const env = {
+    ...process.env,
+    STATE_DIRECTORY: directory,
+    CATALOG_PATH: join(directory, "missing-bootstrap.json"),
+    PORT: "0",
+    PUBLIC_ORIGIN: "http://127.0.0.1:8487",
+    GAME_URL: "http://127.0.0.1:1",
+    GAME_SHARED_KEY: "fixture-shared-key-".repeat(3),
+    STATE_KEY: key.toString("base64"),
+    CODE_ENCRYPTION_KEY: Buffer.alloc(32, 8).toString("base64"),
+    CODE_INDEX_KEY: Buffer.alloc(32, 9).toString("base64"),
+    CSRF_KEY: "fixture-csrf-key-".repeat(3),
+    ENABLE_SERIES_ONE_REWARDS: "0",
+    AUTH_MODE: "bridge",
+    ACCEPTED_CASH_TYPES: "1,2,4",
+  };
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(new URL("../src/server.mjs", import.meta.url))],
+    { env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  try {
+    await Promise.race([
+      new Promise((r) =>
+        child.stdout.on("data", (d) => {
+          if (String(d).includes("listening")) r();
+        }),
+      ),
+      once(child, "exit").then(() => {
+        throw Error("Persisted catalog startup failed");
+      }),
+      new Promise((_, reject) => {
+        const timer = setTimeout(
+          () => reject(Error("Startup timed out")),
+          10000,
+        );
+        timer.unref();
+      }),
+    ]);
+    const check = new SQLiteStore(join(directory, "framework.sqlite"), {
+      encryptionKey: key,
+    });
+    assert.equal(
+      check.read((s) => s.catalog.version),
+      19,
+    );
+    assert.equal(
+      check.read((s) => s.catalog.products[0].price.amount),
+      1700,
+    );
+    check.close();
+    const roles = new Journal(join(directory, "bridge.sqlite"));
+    assert.equal(roles.administrator(17), true);
+    roles.close();
+  } finally {
+    if (child.exitCode === null) {
+      const done = once(child, "exit");
+      child.kill();
+      await done;
     }
     rmSync(directory, { recursive: true, force: true });
   }

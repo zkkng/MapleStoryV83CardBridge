@@ -32,8 +32,9 @@ const nodeEnv =
     "CODE_ENCRYPTION_KEY=" + random(),
     "CODE_INDEX_KEY=" + random(),
     "CSRF_KEY=" + random(),
-    "STATE_DIRECTORY=./state",
-    "CATALOG_PATH=./data/catalog.example.json",
+    "STATE_DIRECTORY=" + resolve(option("--state-directory", "./state")),
+    "CATALOG_PATH=" +
+      resolve(option("--catalog-path", "./data/catalog.example.json")),
     "AUTH_MODE=" + mode,
     "PORT=8487",
     "ACCEPTED_CASH_TYPES=1,2,4",

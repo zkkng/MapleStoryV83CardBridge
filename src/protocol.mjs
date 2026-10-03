@@ -126,8 +126,8 @@ export function verifyRequest({
     [method, path, time, nonce, hash(body)].join("\n"),
   );
   if (!equal(sig, wanted)) return false;
-  for (const [n, t] of nonces) if (t < now - 60000) nonces.delete(n);
+  for (const [n, expiresAt] of nonces) if (expiresAt < now) nonces.delete(n);
   if (nonces.has(nonce) || nonces.size >= 10000) return false;
-  nonces.set(nonce, now);
+  nonces.set(nonce, Number(time) + 60000);
   return true;
 }

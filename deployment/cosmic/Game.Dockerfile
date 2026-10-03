@@ -19,6 +19,9 @@ COPY --from=build /build/wz ./wz
 COPY --from=build /build/scripts ./scripts
 COPY cosmic/LICENSE ./LICENSE
 COPY --from=build /support/AccountCommand.class /opt/card-tools/AccountCommand.class
-RUN mkdir logs cache && chown cosmic:cosmic logs cache
+RUN chmod 755 /opt/server /opt/card-tools \
+    && chmod 644 Server.jar LICENSE /opt/card-tools/AccountCommand.class \
+    && chmod -R a+rX,go-w wz scripts \
+    && mkdir logs cache && chown cosmic:cosmic logs cache
 USER 10001:10001
 ENTRYPOINT ["java", "-Xms256m", "-Xmx1024m", "-jar", "Server.jar"]

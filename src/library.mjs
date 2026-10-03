@@ -1,20 +1,25 @@
 import { key, fail } from "./protocol.mjs";
 import { cashTypes } from "./cash-types.mjs";
+import { Administration } from "./administration.mjs";
 export const operator = { role: "admin" };
 export class Library {
   #locks = new Map();
+  #admission = Promise.resolve();
+  #identities = new Map();
   constructor({
     framework,
     store,
     journal,
     game,
     acceptedCashTypes = [1, 2, 4],
+    rewardsEnabled = false,
   }) {
     this.core = framework;
     this.store = store;
     this.journal = journal;
     this.game = game;
     this.acceptedCashTypes = acceptedCashTypes;
+    this.admin = new Administration(this, { rewardsEnabled });
   }
   actor(person) {
     if (
@@ -23,13 +28,52 @@ export class Library {
       typeof person.name !== "string"
     )
       fail("UNAUTHENTICATED", "Please sign in to your game account.", 401);
-    return {
-      userId: this.core.registerUser(operator, {
-        provider: "maplestory.v83",
-        subject: String(person.accountId),
-        displayName: person.name,
-      }).id,
-    };
+    const cached = this.#identities.get(person.accountId);
+    if (cached?.name === person.name) return { userId: cached.userId };
+    const userId = this.core.registerUser(operator, {
+      provider: "maplestory.v83",
+      subject: String(person.accountId),
+      displayName: person.name,
+    }).id;
+    if (this.#identities.size >= 10000)
+      this.#identities.delete(this.#identities.keys().next().value);
+    this.#identities.set(person.accountId, { name: person.name, userId });
+    return { userId };
+  }
+  catalog() {
+    const catalog = this.core.catalog(),
+      availability = this.core.availability();
+    const disabled = new Set(
+      catalog.variants.filter((v) => v.enabled === false).map((v) => v.id),
+    );
+    const remaining = new Map(
+      availability.variants.map((v) => [
+        v.id,
+        disabled.has(v.id) ? 0 : v.remaining,
+      ]),
+    );
+    for (const product of catalog.products) {
+      const offered =
+        availability.products.find((p) => p.id === product.id)?.available ===
+        true;
+      const exhausted = product.slots.some((slot) => {
+        if (
+          slot.probability &&
+          slot.probability.numerator < slot.probability.denominator
+        )
+          return false;
+        return slot.pool.every((p) => remaining.get(p.variantId) === 0);
+      });
+      product.available = offered && !exhausted;
+      product.availabilityReason = exhausted
+        ? "Out of stock"
+        : !offered
+          ? "Not currently available"
+          : null;
+    }
+    for (const variant of catalog.variants)
+      variant.remaining = remaining.get(variant.id) ?? null;
+    return catalog;
   }
   async state(person) {
     const actor = this.actor(person),
@@ -39,11 +83,46 @@ export class Library {
     wallet.acceptedCashTypes = (wallet.acceptedCashTypes ?? [1, 2, 4]).filter(
       (t) => this.acceptedCashTypes.includes(t),
     );
+    const inventory = this.core
+        .inventory(actor)
+        .sort(
+          (a, b) =>
+            (b.createdAt ?? b.at ?? "").localeCompare(
+              a.createdAt ?? a.at ?? "",
+            ) || a.id.localeCompare(b.id),
+        ),
+      groups = new Map();
+    let totalCards = 0;
+    for (const card of inventory) {
+      if (card.definition.type === "code") continue;
+      totalCards++;
+      const row = groups.get(card.variantId);
+      if (row) row.count++;
+      else
+        groups.set(card.variantId, {
+          variantId: card.variantId,
+          count: 1,
+          card,
+        });
+    }
+    const packPage = this.packPage(person, { limit: 50 });
     return {
       owner: person.name,
+      role: this.journal.administrator(person.accountId)
+        ? "administrator"
+        : "collector",
       wallet,
-      packs: this.core.packs(actor).filter((pack) => !pack.openedAt),
-      inventory: this.core.inventory(actor),
+      packs: packPage.items,
+      packNext: packPage.next,
+      packTotal: packPage.total,
+      inventory: inventory.slice(0, 50),
+      inventoryNext: inventory.length > 50 ? inventory[49].id : null,
+      inventoryTotal: inventory.length,
+      collection: {
+        items: [...groups.values()],
+        totalCards,
+        uniqueCards: groups.size,
+      },
       codes,
       albums: this.core.albums(actor),
       codeNext: codePage.next,
@@ -54,6 +133,45 @@ export class Library {
         result: o.result,
         createdAt: o.createdAt,
       })),
+    };
+  }
+  inventoryPage(person, { after = "", limit = 50 } = {}) {
+    if (
+      typeof after !== "string" ||
+      after.length > 100 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100
+    )
+      fail(
+        "INVALID_PAGE",
+        "Use a supplied inventory cursor and a limit from 1 to 100.",
+      );
+    return this.core.inventoryPage(this.actor(person), { after, limit });
+  }
+  packPage(person, { after = "", limit = 50 } = {}) {
+    if (
+      typeof after !== "string" ||
+      after.length > 100 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100
+    )
+      fail(
+        "INVALID_PAGE",
+        "Use a supplied pack cursor and a limit from 1 to 100.",
+      );
+    const packs = this.core
+      .packs(this.actor(person))
+      .filter((p) => !p.openedAt);
+    const start = after ? packs.findIndex((p) => p.id === after) + 1 : 0;
+    if (after && !start)
+      fail("INVALID_CURSOR", "Pack list changed. Refresh this view.", 409);
+    const items = packs.slice(start, start + limit);
+    return {
+      items,
+      next: start + limit < packs.length ? items.at(-1).id : null,
+      total: packs.length,
     };
   }
   codePage(person, { after = "", limit = 50 } = {}) {
@@ -71,21 +189,80 @@ export class Library {
       cashType = input.cashType ?? 1;
     if (!this.acceptedCashTypes.includes(cashType))
       fail("UNSUPPORTED_CASH_TYPE", "Choose an accepted cash balance.");
-    return {
+    const quote = {
       ...this.core.quote(actor, {
         productId: input.productId,
         quantity: input.quantity ?? 1,
       }),
       cashType,
     };
+    if (
+      quote.price.currencyId !== "nx" ||
+      !Number.isSafeInteger(quote.price.amount) ||
+      quote.price.amount < 1 ||
+      quote.price.amount > 100000000
+    )
+      fail(
+        "INVALID_PRICE",
+        "The total must be between 1 and 100,000,000 NX.",
+        409,
+      );
+    return quote;
   }
   async buy(person, input) {
+    return this.#coordinate(() => this.#buy(person, input));
+  }
+  async #coordinate(work) {
+    const prior = this.#admission;
+    let release;
+    this.#admission = new Promise((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
+  }
+  async coordinatePublication(work) {
+    return this.#coordinate(async () => {
+      if (this.journal.pending().length)
+        fail(
+          "PURCHASE_PENDING",
+          "Complete outstanding purchases before publishing a catalog.",
+          409,
+        );
+      return work();
+    });
+  }
+  readiness() {
+    try {
+      return {
+        ok:
+          (!this.store.integrity || this.store.integrity()) &&
+          this.journal.writable(),
+        profile: "single-writer",
+        capacity: this.core.capacity?.() ?? { qualified: false },
+      };
+    } catch {
+      return {
+        ok: false,
+        profile: "single-writer",
+        error: "STORAGE_UNAVAILABLE",
+      };
+    }
+  }
+  async #buy(person, input) {
     key(input.key);
     const clean = {
       productId: input.productId,
       quantity: input.quantity ?? 1,
       catalogVersion: input.catalogVersion,
       productRevision: input.productRevision,
+      ...(input.adminRevision !== undefined
+        ? { adminRevision: input.adminRevision }
+        : {}),
       cashType: input.cashType ?? 1,
     };
     const actor = this.actor(person),
@@ -100,6 +277,12 @@ export class Library {
       );
       return this.#exclusive(restored.id, () => this.#resume(restored));
     }
+    if (!this.readiness().ok)
+      fail(
+        "STORAGE_UNAVAILABLE",
+        "New purchases are paused while storage is unavailable.",
+        503,
+      );
     if (this.journal.pending().some((o) => o.accountId === person.accountId))
       fail(
         "PURCHASE_PENDING",
@@ -115,7 +298,8 @@ export class Library {
       );
     if (
       quote.catalogVersion !== clean.catalogVersion ||
-      quote.productRevision !== clean.productRevision
+      quote.productRevision !== clean.productRevision ||
+      quote.adminRevision !== clean.adminRevision
     )
       fail(
         "STALE_QUOTE",
@@ -128,6 +312,7 @@ export class Library {
       clean,
       actor.userId,
       quote,
+      person.name,
     );
     return this.#exclusive(order.id, () => this.#resume(order));
   }
@@ -137,6 +322,11 @@ export class Library {
     this.#locks.set(id, pending);
     try {
       return await pending;
+    } catch (error) {
+      const order = this.journal.order(id);
+      if (order && !["complete", "rejected"].includes(order.state))
+        this.journal.failed(order, error);
+      throw error;
     } finally {
       this.#locks.delete(id);
     }
@@ -149,6 +339,7 @@ export class Library {
         "This purchase was declined. Review your balance and try a new purchase.",
         409,
       );
+    this.journal.attempt(order);
     if (order.state === "pending") {
       try {
         const paid = await this.game("/debit", {
@@ -173,7 +364,9 @@ export class Library {
           e.code === "ACCOUNT_UNAVAILABLE"
         ) {
           this.journal.save(order, "rejected");
+          order.state = "rejected";
         }
+        this.journal.failed(order, e);
         throw e;
       }
     }
@@ -197,30 +390,62 @@ export class Library {
     await this.reconcile({ accountId: order.accountId, shouldStop });
     return order.result;
   }
-  async recover({ shouldStop = () => false } = {}) {
-    for (const order of this.journal.pending()) {
+  async recover({ shouldStop = () => false, force = true } = {}) {
+    const startedAt = new Date().toISOString();
+    let completed = 0,
+      failed = 0;
+    for (const order of this.journal.pending().slice(0, 20)) {
       if (shouldStop()) return;
+      if (
+        !force &&
+        order.nextAttemptAt &&
+        Date.parse(order.nextAttemptAt) > Date.now()
+      )
+        continue;
       try {
-        await this.#exclusive(order.id, () =>
-          this.#resume(order, { shouldStop }),
+        await this.#coordinate(() =>
+          this.#exclusive(order.id, () => this.#resume(order, { shouldStop })),
         );
+        completed++;
       } catch (error) {
-        if (error.code === "GAME_UNAVAILABLE") return;
-        /* Durable order remains available for the next recovery pass. */
+        failed++;
+        this.journal.failed(this.journal.order(order.id), error);
+        if (error.code === "GAME_UNAVAILABLE") break;
       }
     }
+    this.lastRecovery = {
+      startedAt,
+      completed,
+      failed,
+      finishedAt: new Date().toISOString(),
+    };
+    if (failed)
+      console.warn(
+        JSON.stringify({ event: "purchase_recovery", failed, completed }),
+      );
+  }
+  async retry(order, before = async () => {}) {
+    return this.#coordinate(async () => {
+      await before();
+      return this.#exclusive(order.id, () =>
+        this.#resume(this.journal.order(order.id)),
+      );
+    });
   }
   async reconcile({
     accountId: scope,
+    issuanceId,
     force = false,
     shouldStop = () => false,
   } = {}) {
-    let after = "";
+    let after = "",
+      attempts = 0;
     do {
       const page = this.core.codeInventory(operator, { limit: 200, after });
       after = page.next;
       for (const row of page.items) {
         if (shouldStop()) return;
+        if (issuanceId && row.id !== issuanceId) continue;
         if (
           !row.holderId ||
           !row.copyId ||
@@ -238,6 +463,9 @@ export class Library {
           continue;
         try {
           if (this.journal.registration(row.id) !== "ready") {
+            if (!force && !this.journal.registrationDue(row.id)) continue;
+            if (++attempts > 50) return;
+            this.journal.registrationAttempt(row.id);
             const material = this.core.codeRegistrationMaterial(
               operator,
               row.id,
@@ -267,8 +495,16 @@ export class Library {
               occurredAt: state.usedAt,
             });
         } catch (error) {
+          this.journal.registrationFailure(row.id, error);
           if (error.code === "GAME_UNAVAILABLE") return;
-          /* Registration and status are retried without exposing plaintext codes. */
+          console.warn(
+            JSON.stringify({
+              event: "code_registration_retry",
+              code: /^[A-Z0-9_]+$/.test(error.code ?? "")
+                ? error.code
+                : "UNAVAILABLE",
+            }),
+          );
         }
       }
     } while (after);

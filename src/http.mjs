@@ -18,12 +18,12 @@ const types = {
   ".mp3": "audio/mpeg",
   ".woff2": "font/woff2",
 };
-export async function body(req) {
+export async function body(req, maximum = 16384) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 16384) fail("PAYLOAD_TOO_LARGE", "Request is too large.", 413);
+    if (size > maximum) fail("PAYLOAD_TOO_LARGE", "Request is too large.", 413);
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -180,8 +180,21 @@ export function createLibraryHttp({
       }
       if (path.startsWith("/api/library/")) {
         rate(req);
-        if (url.search) fail("INVALID_REQUEST", "Unexpected query parameters.");
         const route = path.slice("/api/library/".length);
+        if (
+          url.search &&
+          !["admin/orders", "admin/activity", "admin/registrations"].includes(
+            route,
+          )
+        )
+          fail("INVALID_REQUEST", "Unexpected query parameters.");
+        for (const field of url.searchParams.keys())
+          if (!["after", "limit", "search"].includes(field))
+            fail("INVALID_REQUEST", "Unexpected query parameter.");
+        if (req.method === "GET" && route === "live") {
+          response(res, 200, { ok: true });
+          return;
+        }
         if (req.method === "GET" && route === "rewards") {
           response(res, 200, {
             ...seriesOne,
@@ -195,7 +208,7 @@ export function createLibraryHttp({
         }
         if (req.method === "GET" && route === "catalog") {
           response(res, 200, {
-            ...library.core.catalog(),
+            ...library.catalog(),
             acceptedCashTypes: library.acceptedCashTypes,
           });
           return;
@@ -206,6 +219,7 @@ export function createLibraryHttp({
             !ready ||
             ready.protocol !== "v83-card-bridge/1" ||
             ready.ok !== true ||
+            ready.leaseReady !== true ||
             ready.callbackReady !== true ||
             ready.sessionSource !== authMode ||
             !Array.isArray(ready.acceptedCashTypes) ||
@@ -217,6 +231,13 @@ export function createLibraryHttp({
               "The game and card service configuration do not agree.",
               503,
             );
+          const storage = library.readiness();
+          if (!storage.ok)
+            fail(
+              "STORAGE_UNAVAILABLE",
+              "Storage is not ready. Browsing remains available.",
+              503,
+            );
           response(res, 200, {
             ok: true,
             gameReady: true,
@@ -224,6 +245,8 @@ export function createLibraryHttp({
             authMode,
             acceptedCashTypes: library.acceptedCashTypes,
             catalogVersion: library.core.catalog().version,
+            leaseReady: ready.leaseReady === true,
+            storage,
           });
           return;
         }
@@ -235,6 +258,12 @@ export function createLibraryHttp({
                   username: person.name,
                   csrf: person.csrf,
                   authMode,
+                  role: library.journal.administrator(person.accountId)
+                    ? "administrator"
+                    : "collector",
+                  capabilities: library.journal.administrator(person.accountId)
+                    ? ["administration"]
+                    : [],
                 }
               : { signedIn: false, authMode };
           if (!person && authMode === "bridge") {
@@ -303,6 +332,12 @@ export function createLibraryHttp({
             username: person.name,
             authMode,
             csrf: mac(csrfSecret, accountToken),
+            role: library.journal.administrator(person.accountId)
+              ? "administrator"
+              : "collector",
+            capabilities: library.journal.administrator(person.accountId)
+              ? ["administration"]
+              : [],
           });
           return;
         }
@@ -316,6 +351,27 @@ export function createLibraryHttp({
         if (req.method === "GET" && route === "state") {
           response(res, 200, await library.state(person));
           return;
+        }
+        if (route.startsWith("admin/")) {
+          library.admin.require(person);
+          if (req.method === "GET") {
+            const options = Object.fromEntries(url.searchParams);
+            const get = {
+              "admin/catalog": () => library.admin.catalog(person),
+              "admin/export": () => library.admin.catalog(person),
+              "admin/overview": () =>
+                library.admin.overview(person, () => identity(req)),
+              "admin/orders": () =>
+                library.admin.orders(person, options, () => identity(req)),
+              "admin/activity": () => library.admin.activity(person, options),
+              "admin/registrations": () =>
+                library.admin.registrations(person, options),
+            };
+            if (!Object.hasOwn(get, route))
+              fail("NOT_FOUND", "Method not found.", 404);
+            response(res, 200, await get[route]());
+            return;
+          }
         }
         if (req.method !== "POST") fail("NOT_FOUND", "Method not found.", 404);
         if (
@@ -335,11 +391,40 @@ export function createLibraryHttp({
           response(res, 200, { ok: true });
           return;
         }
-        const value = JSON.parse(await body(req));
+        const value = JSON.parse(
+          await body(req, route === "admin/preview" ? 2 * 1024 * 1024 : 16384),
+        );
         if (!value || Array.isArray(value) || typeof value !== "object")
           fail("INVALID_REQUEST", "Submit a JSON object.");
+        if (route.startsWith("admin/")) {
+          const revalidate = () => identity(req);
+          let result;
+          if (route === "admin/preview")
+            result = library.admin.preview(person, value);
+          else if (route === "admin/publish")
+            result = await library.admin.publish(person, value, revalidate);
+          else if (/^admin\/orders\/[a-f0-9]{64}\/retry$/.test(route))
+            result = await library.admin.retry(
+              person,
+              route.split("/")[2],
+              revalidate,
+            );
+          else if (
+            /^admin\/registrations\/[A-Za-z0-9_-]{1,100}\/retry$/.test(route)
+          )
+            result = await library.admin.retryRegistration(
+              person,
+              route.split("/")[2],
+              revalidate,
+            );
+          else fail("NOT_FOUND", "Method not found.", 404);
+          response(res, 200, result);
+          return;
+        }
         const actions = {
           codes: () => library.codePage(person, value),
+          inventory: () => library.inventoryPage(person, value),
+          packs: () => library.packPage(person, value),
           quote: () => library.quote(person, value),
           buy: () => library.buy(person, value),
           open: () => library.open(person, value),

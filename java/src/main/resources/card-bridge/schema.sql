@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS card_bridge_outbox (
  receipt_id CHAR(36) PRIMARY KEY,
  payload TEXT NOT NULL,
  delivered BOOLEAN NOT NULL DEFAULT FALSE,
+ attempts INT NOT NULL DEFAULT 0,
+ last_attempt BIGINT,
+ next_attempt BIGINT NOT NULL DEFAULT 0,
+ last_error VARCHAR(48),
  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
  INDEX card_bridge_delivery(delivered,created_at)
 ) ENGINE=InnoDB;
@@ -34,4 +38,14 @@ CREATE TABLE IF NOT EXISTS card_bridge_sessions (
  account_id INT NOT NULL,
  expires_at BIGINT NOT NULL,
  INDEX card_bridge_session_expiry(expires_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS card_bridge_native_purchases (
+ receipt_id CHAR(36) PRIMARY KEY,
+ account_id INT NOT NULL,
+ character_id INT NOT NULL,
+ cash_type INT NOT NULL,
+ amount INT NOT NULL,
+ kind VARCHAR(16) NOT NULL,
+ created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;

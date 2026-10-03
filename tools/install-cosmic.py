@@ -3,6 +3,91 @@
 from pathlib import Path
 import argparse, shutil, re
 
+
+def masked_java(text):
+    """Preserve offsets while excluding comments and literals from hook validation."""
+    return re.sub(
+        r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*.*?\*/',
+        lambda match: "".join("\n" if char == "\n" else " " for char in match.group()),
+        text,
+        flags=re.S,
+    )
+
+
+def patch_character_save(text):
+    text = text.replace(
+        "server.cardbridge.BridgeRewards.beforeSave", "BridgeRewards.beforeSave"
+    ).replace("server.cardbridge.BridgeRewards.afterSave", "BridgeRewards.afterSave")
+    code = masked_java(text)
+    signatures = list(
+        re.finditer(
+            r"\bpublic\s+synchronized\s+void\s+saveCharToDB\s*\(\s*boolean\s+notAutosave\s*\)",
+            code,
+        )
+    )
+    if len(signatures) != 1:
+        raise SystemExit("Unsupported character save method")
+    start = code.find("{", signatures[0].end())
+    if start < 0:
+        raise SystemExit("Unsupported character save method")
+    depth, end = 1, start + 1
+    while depth and end < len(code):
+        depth += (code[end] == "{") - (code[end] == "}")
+        end += 1
+    if depth:
+        raise SystemExit("Unsupported character save method")
+    commits = list(re.finditer(r"\bcon\s*\.\s*commit\s*\(\s*\)\s*;", code[start:end]))
+    if len(commits) != 1:
+        raise SystemExit("Character save requires exactly one transaction commit")
+    commit_start = start + commits[0].start()
+    commit_end = start + commits[0].end()
+    hooks = list(
+        re.finditer(r"\bBridgeRewards\s*\.\s*(beforeSave|afterSave)\s*\(", code)
+    )
+    if not hooks:
+        line_start = text.rfind("\n", 0, commit_start) + 1
+        indent = text[line_start:commit_start]
+        if indent.strip():
+            raise SystemExit("Unsupported character transaction commit layout")
+        patched = (
+            text[:commit_start]
+            + "BridgeRewards.beforeSave(con, this);\n"
+            + indent
+            + text[commit_start:commit_end]
+            + "\n"
+            + indent
+            + "BridgeRewards.afterSave(this);"
+            + text[commit_end:]
+        )
+        return patch_character_save(patched)
+    valid = (
+        len(hooks) == 2
+        and hooks[0].group(1) == "beforeSave"
+        and hooks[1].group(1) == "afterSave"
+        and start
+        < hooks[0].start()
+        < commit_start
+        < commit_end
+        < hooks[1].start()
+        < end
+    )
+    if valid:
+        pair = code[hooks[0].start() : end]
+        valid = bool(
+            re.match(
+                r"BridgeRewards\s*\.\s*beforeSave\s*\(\s*con\s*,\s*this\s*\)\s*;\s*"
+                r"con\s*\.\s*commit\s*\(\s*\)\s*;\s*"
+                r"BridgeRewards\s*\.\s*afterSave\s*\(\s*this\s*\)\s*;",
+                pair,
+            )
+        )
+    if not valid:
+        raise SystemExit(
+            "Invalid character save hooks: require one beforeSave, commit, afterSave pair in the synchronized save method"
+        )
+    return text
+
+
 p = argparse.ArgumentParser()
 p.add_argument("server", type=Path)
 p.add_argument("--check", action="store_true")
@@ -130,33 +215,175 @@ for rel, replacements in patches.items():
             )
             text = text[: plugin.start()] + replacement + text[plugin.end() :]
     if rel.endswith("client/Character.java"):
-        text = text.replace(
-            "server.cardbridge.BridgeRewards.beforeSave", "BridgeRewards.beforeSave"
-        ).replace(
-            "server.cardbridge.BridgeRewards.afterSave", "BridgeRewards.afterSave"
-        )
-        if "BridgeRewards.beforeSave(con, this)" not in text:
-            start = text.find(
-                "public synchronized void saveCharToDB(boolean notAutosave)"
-            )
-            end = text.find("\n    public ", start + 20)
-            if start < 0 or end < 0:
-                raise SystemExit("Unsupported character save method")
-            section = text[start:end]
-            commit = section.rfind("                con.commit();")
-            if commit < 0:
-                raise SystemExit("Character transaction commit missing")
-            section = section[:commit] + section[commit:].replace(
-                "                con.commit();",
-                "                BridgeRewards.beforeSave(con, this);\n                con.commit();\n                BridgeRewards.afterSave(this);",
-                1,
-            )
-            text = text[:start] + section + text[end:]
+        text = patch_character_save(text)
     if rel.endswith("net/server/Server.java"):
         text = text.replace(
             "server.cardbridge.BridgeHttp.start()", "BridgeHttp.start()"
         )
+        if "BridgeHttp.acquireLease();" not in text:
+            anchor = "        DatabaseMigrations.runDatabaseMigrations();"
+            if text.count(anchor) != 1:
+                raise SystemExit("Unsupported game startup layout")
+            text = text.replace(
+                anchor, "        BridgeHttp.acquireLease();\n" + anchor, 1
+            )
     proposed[file] = text
+
+# Keep changes to the upstream handler bounded to validated transaction boundaries.
+handler = base / "src/main/java/net/server/channel/handlers/CashOperationHandler.java"
+text = handler.read_text(encoding="utf-8")
+if "BridgeNativePurchases.ring" not in text:
+
+    def replace_once(old, new):
+        global text
+        if text.count(old) != 1:
+            raise SystemExit(
+                "Unsupported Cash Shop purchase layout; apply compatible hooks manually."
+            )
+        text = text.replace(old, new, 1)
+
+    for cash, friendship, notification in [
+        ("toCharge", "false", "showBoughtCashItem(eqp, c.getAccID())"),
+        ("payment", "true", "showBoughtCashRing(eqp, partner.getName(), c.getAccID())"),
+    ]:
+        needle = (
+            "                            if (itemRing.toItem() instanceof Equip eqp) {"
+        )
+        # The two identical source anchors are replaced in their respective action regions.
+        start = text.index("action == " + ("0x1D" if friendship == "false" else "0x23"))
+        end = text.index("} else if (action ==", start + 20)
+        region = text[start:end]
+        if region.count(needle) != 1:
+            raise SystemExit("Unsupported native ring layout")
+        region = region.replace(
+            needle,
+            "                            if (!server.cardbridge.BridgeNativePurchases.supportedCash("
+            + cash
+            + ")"
+            " || !canBuy(chr, itemRing, cs.getCash("
+            + cash
+            + "))) { c.enableCSActions(); return; }\n"
+            "                            if (server.cardbridge.BridgeNativePurchases.ring(c, "
+            + cash
+            + ", itemRing, partner, text, "
+            + friendship
+            + ", noteService)) return;\n"
+            + needle
+            + "\n                                cs.gainCash("
+            + cash
+            + ", -itemRing.getPrice());",
+            1,
+        )
+        region = region.replace(
+            "                                Pair<Integer, Integer> rings = Ring.createRing(itemRing.getItemId(), chr, partner);",
+            "                                Pair<Integer, Integer> rings = Ring.createRing(itemRing.getItemId(), chr, partner);\n"
+            "                                if (rings.getLeft() < 0 || rings.getRight() < 0) { cs.gainCash("
+            + cash
+            + ", itemRing.getPrice()); c.enableCSActions(); return; }",
+            1,
+        )
+        old = (
+            "                                cs.gainCash(toCharge, itemRing, chr.getWorld());"
+            if cash == "toCharge"
+            else "                                cs.gainCash(payment, -itemRing.getPrice());"
+        )
+        # Remove only the original post-delivery debit, retaining the new pre-delivery debit.
+        position = region.index("c.sendPacket(PacketCreator." + notification + ");")
+        region = region[:position] + region[position:].replace(old + "\n", "", 1)
+        text = text[:start] + region + text[end:]
+
+    replace_once(
+        "                        if (chr.registerNameChange(newName)) { //success",
+        "                        if (server.cardbridge.BridgeNativePurchases.request(c, cItem, newName, 0, false)) return;\n"
+        "                        Item nameItem = cItem.toItem();\n"
+        "                        cs.gainCash(4, cItem, chr.getWorld());\n"
+        "                        if (chr.registerNameChange(newName)) { //success",
+    )
+    replace_once(
+        "                            Item item = cItem.toItem();\n                            c.sendPacket(PacketCreator.showNameChangeSuccess(item, c.getAccID()));\n                            cs.gainCash(4, cItem, chr.getWorld());",
+        "                            Item item = nameItem;\n                            c.sendPacket(PacketCreator.showNameChangeSuccess(item, c.getAccID()));",
+    )
+    replace_once(
+        "                            cs.addToInventory(item);\n                        } else {\n                            c.sendPacket(PacketCreator.showCashShopMessage((byte) 0));\n                        }\n                    }\n                    c.enableCSActions();\n                } else if (action == 0x31)",
+        "                            cs.addToInventory(item);\n                        } else {\n                            cs.gainCash(4, cItem.getPrice());\n                            c.sendPacket(PacketCreator.showCashShopMessage((byte) 0));\n                        }\n                    }\n                    c.enableCSActions();\n                } else if (action == 0x31)",
+    )
+    replace_once(
+        "                        } else if (chr.registerWorldTransfer(newWorldSelection)) {",
+        "                        } else {\n"
+        "                            if (server.cardbridge.BridgeNativePurchases.request(c, cItem, null, newWorldSelection, true)) return;\n"
+        "                            Item transferItem = cItem.toItem();\n"
+        "                            cs.gainCash(4, cItem, chr.getWorld());\n"
+        "                            if (chr.registerWorldTransfer(newWorldSelection)) {",
+    )
+    replace_once(
+        "                            Item item = cItem.toItem();\n                            c.sendPacket(PacketCreator.showWorldTransferSuccess(item, c.getAccID()));\n                            cs.gainCash(4, cItem, chr.getWorld());",
+        "                            Item item = transferItem;\n                            c.sendPacket(PacketCreator.showWorldTransferSuccess(item, c.getAccID()));",
+    )
+    replace_once(
+        "                            c.sendPacket(PacketCreator.showWorldTransferSuccess(item, c.getAccID()));\n                            cs.addToInventory(item);\n                        } else {\n                            c.sendPacket(PacketCreator.showCashShopMessage((byte) 0));\n                        }",
+        "                            c.sendPacket(PacketCreator.showWorldTransferSuccess(item, c.getAccID()));\n                            cs.addToInventory(item);\n                        } else {\n                            cs.gainCash(4, cItem.getPrice());\n                            c.sendPacket(PacketCreator.showCashShopMessage((byte) 0));\n                        }\n                        }",
+    )
+    replace_once(
+        "if (item != null && item.isOnSale() && item.getPrice() <= cash)",
+        "if (item != null && item.isOnSale() && item.getPrice() > 0 && item.getPrice() <= 100000000 && item.getPrice() <= cash)",
+    )
+    replace_once(
+        "worldTransferError != 0 || newWorldSelection >=",
+        "worldTransferError != 0 || newWorldSelection < 0 || newWorldSelection >=",
+    )
+for cash, friendship in [("toCharge", "false"), ("payment", "true")]:
+    family = (
+        "server.cardbridge.BridgeNativePurchases.validRingOffer(itemRing, "
+        + friendship
+        + ")"
+    )
+    if family not in text:
+        anchor = (
+            "!server.cardbridge.BridgeNativePurchases.supportedCash("
+            + cash
+            + ") || !canBuy"
+        )
+        if text.count(anchor) != 1:
+            raise SystemExit("Unsupported ring-family validation layout")
+        text = text.replace(
+            anchor,
+            "!server.cardbridge.BridgeNativePurchases.supportedCash("
+            + cash
+            + ") || !"
+            + family
+            + " || !canBuy",
+            1,
+        )
+for marker in [
+    "BridgeNativePurchases.ring(c, toCharge, itemRing, partner, text, false, noteService)",
+    "BridgeNativePurchases.ring(c, payment, itemRing, partner, text, true, noteService)",
+    "BridgeNativePurchases.request(c, cItem, newName, 0, false)",
+    "BridgeNativePurchases.request(c, cItem, null, newWorldSelection, true)",
+    "item.getPrice() > 0 && item.getPrice() <= 100000000",
+    "newWorldSelection < 0",
+    "BridgeNativePurchases.validRingOffer(itemRing, false)",
+    "BridgeNativePurchases.validRingOffer(itemRing, true)",
+]:
+    if text.count(marker) != 1:
+        raise SystemExit(
+            "Incomplete or conflicting native purchase hooks; repair the compatible source before installing."
+        )
+proposed[handler] = text
+character = base / "src/main/java/client/Character.java"
+if "public void bridgeNameChangePending()" not in proposed[character]:
+    if (
+        proposed[character].count(
+            "    public boolean registerNameChange(String newName) {"
+        )
+        != 1
+    ):
+        raise SystemExit("Unsupported name-change registration layout")
+    proposed[character] = proposed[character].replace(
+        "    public boolean registerNameChange(String newName) {",
+        "    public void bridgeNameChangePending() { pendingNameChange = true; }\n\n"
+        "    public boolean registerNameChange(String newName) {",
+        1,
+    )
 # Validate every hook before writing any part of the installation.
 if not args.check:
     for file, text in proposed.items():

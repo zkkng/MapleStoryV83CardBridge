@@ -11,6 +11,27 @@ import tools.DatabaseConnection;
 public final class BridgeSessions {
   private BridgeSessions() {}
 
+  static Map<String, Object> resolve(String name, Integer accountId) throws SQLException {
+    if ((name == null) == (accountId == null)
+        || (name != null && !name.matches("[a-zA-Z0-9]{3,13}"))
+        || (accountId != null && accountId < 1))
+      throw new IllegalArgumentException("Supply one account identity");
+    try (Connection con = DatabaseConnection.getConnection();
+        PreparedStatement ps =
+            con.prepareStatement(
+                "SELECT id,name FROM accounts WHERE "
+                    + (name != null ? "name=?" : "id=?")
+                    + " AND banned=0 AND tempban<=UTC_TIMESTAMP()")) {
+      if (name != null) ps.setString(1, name);
+      else ps.setInt(1, accountId);
+      try (ResultSet rs = ps.executeQuery()) {
+        if (!rs.next())
+          throw new BridgeHttp.Problem(404, "ACCOUNT_UNAVAILABLE", "The account is unavailable.");
+        return Map.of("accountId", rs.getInt(1), "name", rs.getString(2));
+      }
+    }
+  }
+
   static boolean nativeSessions() {
     return !"grove".equals(System.getenv("CARD_BRIDGE_SESSION_SOURCE"));
   }
@@ -83,11 +104,11 @@ public final class BridgeSessions {
     String sql =
         nativeSessions()
             ? "SELECT a.id,a.name FROM card_bridge_sessions s JOIN accounts a ON a.id=s.account_id"
-                  + " WHERE s.token_hash=? AND s.expires_at>? AND a.banned=0 AND"
-                  + " a.tempban<=UTC_TIMESTAMP()"
+                + " WHERE s.token_hash=? AND s.expires_at>? AND a.banned=0 AND"
+                + " a.tempban<=UTC_TIMESTAMP()"
             : "SELECT a.id,a.name FROM web_sessions s JOIN accounts a ON a.id=s.account_id WHERE"
-                  + " s.token_hash=? AND s.expires_at>UTC_TIMESTAMP() AND a.banned=0 AND"
-                  + " a.tempban<=UTC_TIMESTAMP()";
+                + " s.token_hash=? AND s.expires_at>UTC_TIMESTAMP() AND a.banned=0 AND"
+                + " a.tempban<=UTC_TIMESTAMP()";
     try (Connection con = DatabaseConnection.getConnection();
         PreparedStatement ps = con.prepareStatement(sql)) {
       ps.setString(1, hash);

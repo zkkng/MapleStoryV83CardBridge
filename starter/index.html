@@ -91,9 +91,18 @@
           >Unopened packs <span id="pack-count">0</span></a
         ><a href="#collection-section"
           >Collection <span id="card-count">0</span></a
-        ><a id="code-link" href="#code-section">Reward codes</a>
+        ><a id="code-link" href="#code-section">Reward codes</a
+        ><a id="admin-link" href="#administration" hidden>Administration</a>
       </nav>
       <div id="overview" class="overview" hidden></div>
+      <div id="connection-notice" class="notice" role="status" hidden>
+        <strong>Game account service is temporarily unavailable.</strong>
+        <p>
+          You can still browse. Purchases, balances and administration will
+          resume when the connection recovers. Your saved purchase is retained.
+        </p>
+        <button id="connection-retry" class="quiet">Retry connection</button>
+      </div>
       <section id="shop">
         <div class="section-heading">
           <div>
@@ -145,6 +154,9 @@
           </div>
         </div>
         <div id="packs" class="pack-grid"></div>
+        <button id="more-packs" class="quiet" hidden>
+          Load more unopened packs
+        </button>
         <div id="opened" aria-live="polite"></div>
       </section>
       <section id="collection-section">
@@ -220,6 +232,7 @@
         <div id="codes"></div>
         <button id="more-codes" class="quiet" hidden>Load more codes</button>
       </section>
+      <section id="administration" hidden></section>
       <section class="help panel">
         <h2>A few things to know</h2>
         <div class="help-grid">

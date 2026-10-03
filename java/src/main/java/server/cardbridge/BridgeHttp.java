@@ -18,6 +18,9 @@ public final class BridgeHttp {
   private static final ConcurrentHashMap<String, Long> NONCES = new ConcurrentHashMap<>();
   private static Connection lease;
   private static HttpServer listener;
+  private static boolean leaseLost;
+  private static long lastOutboxLog;
+  static java.util.function.IntConsumer terminate = code -> Runtime.getRuntime().halt(code);
   private static final ScheduledExecutorService worker =
       Executors.newSingleThreadScheduledExecutor(
           r -> {
@@ -55,13 +58,54 @@ public final class BridgeHttp {
   }
 
   public static synchronized void requireLease() throws SQLException {
-    if (lease == null || lease.isClosed())
-      throw new SQLException("Bridge writer lease unavailable");
-    try (Statement st = lease.createStatement();
-        ResultSet rs =
-            st.executeQuery("SELECT IS_USED_LOCK('card_bridge_writer')=CONNECTION_ID()")) {
-      rs.next();
-      if (rs.getInt(1) != 1) throw new SQLException("Bridge writer lease lost");
+    if (leaseLost) throw new SQLException("Bridge writer lease unavailable");
+    try {
+      if (lease == null || lease.isClosed())
+        throw new SQLException("Bridge writer lease unavailable");
+      try (Statement st = lease.createStatement();
+          ResultSet rs =
+              st.executeQuery("SELECT IS_USED_LOCK('card_bridge_writer')=CONNECTION_ID()")) {
+        rs.next();
+        if (rs.getInt(1) != 1) throw new SQLException("Bridge writer lease lost");
+      }
+    } catch (SQLException e) {
+      leaseLost = true;
+      System.err.println(
+          "card_bridge: WRITER_LEASE_LOST; restarting game to fence old reward claims");
+      terminate.accept(75);
+      throw e;
+    }
+  }
+
+  static void uncertainCommit() {
+    System.err.println(
+        "card_bridge: COMMIT_UNCERTAIN; restarting game before further inventory saves");
+    terminate.accept(75);
+    throw new IllegalStateException("Commit outcome requires process recovery");
+  }
+
+  public static synchronized void acquireLease() {
+    if (!ENABLED || lease != null) return;
+    try {
+      env("CARD_BRIDGE_SHARED_KEY");
+      codeKey();
+      Connection candidate = DatabaseConnection.getConnection();
+      try {
+        candidate.setNetworkTimeout(Runnable::run, 5000);
+        try (Statement st = candidate.createStatement();
+            ResultSet rs = st.executeQuery("SELECT GET_LOCK('card_bridge_writer',0)")) {
+          if (!rs.next() || rs.getInt(1) != 1)
+            throw new SQLException("Another bridge game writer is running");
+        }
+        lease = candidate;
+      } catch (Exception error) {
+        candidate.close();
+        throw error;
+      }
+    } catch (Exception error) {
+      System.err.println("card_bridge: WRITER_LEASE_UNAVAILABLE; game startup stopped");
+      terminate.accept(75);
+      throw new IllegalStateException("Bridge writer lease acquisition failed", error);
     }
   }
 
@@ -70,13 +114,7 @@ public final class BridgeHttp {
     try {
       env("CARD_BRIDGE_SHARED_KEY");
       codeKey();
-      lease = DatabaseConnection.getConnection();
-      try (Statement st = lease.createStatement();
-          ResultSet rs = st.executeQuery("SELECT GET_LOCK('card_bridge_writer',0)")) {
-        rs.next();
-        if (rs.getInt(1) != 1)
-          throw new IllegalStateException("Another bridge game writer is running");
-      }
+      acquireLease();
       try (InputStream stream = BridgeHttp.class.getResourceAsStream("/card-bridge/schema.sql")) {
         if (stream == null) throw new IllegalStateException("Card bridge schema resource missing");
         String sql = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
@@ -95,6 +133,22 @@ public final class BridgeHttp {
           }
       }
       BridgeWallet.acceptedTypes();
+      for (String[] column :
+          new String[][] {
+            {"attempts", "INT NOT NULL DEFAULT 0"}, {"last_attempt", "BIGINT"},
+            {"next_attempt", "BIGINT NOT NULL DEFAULT 0"}, {"last_error", "VARCHAR(48)"}
+          }) {
+        try (ResultSet columns =
+            lease
+                .getMetaData()
+                .getColumns(lease.getCatalog(), null, "card_bridge_outbox", column[0])) {
+          if (!columns.next())
+            try (Statement st = lease.createStatement()) {
+              st.execute(
+                  "ALTER TABLE card_bridge_outbox ADD COLUMN " + column[0] + " " + column[1]);
+            }
+        }
+      }
       if (!Set.of("bridge", "grove")
           .contains(System.getenv().getOrDefault("CARD_BRIDGE_SESSION_SOURCE", "bridge")))
         throw new IllegalStateException("Invalid session source");
@@ -180,6 +234,11 @@ public final class BridgeHttp {
       result =
           switch (path) {
             case "/health" -> health();
+            case "/diagnostics" -> BridgeRewards.diagnostics();
+            case "/resolve-account" ->
+                BridgeSessions.resolve(
+                    value.has("name") ? text(value, "name", 13) : null,
+                    value.has("accountId") ? number(value, "accountId") : null);
             case "/session" -> BridgeSessions.session(text(value, "tokenHash", 64));
             case "/login" ->
                 BridgeSessions.login(
@@ -285,6 +344,8 @@ public final class BridgeHttp {
         "acceptedCashTypes",
         BridgeWallet.acceptedTypes(),
         "callbackReady",
+        true,
+        "leaseReady",
         true);
   }
 
@@ -308,7 +369,10 @@ public final class BridgeHttp {
       try (Connection con = DatabaseConnection.getConnection();
           PreparedStatement ps =
               con.prepareStatement(
-                  "SELECT receipt_id,payload FROM card_bridge_outbox WHERE delivered=FALSE ORDER BY"
+                  "SELECT receipt_id,payload,attempts FROM card_bridge_outbox WHERE delivered=FALSE"
+                      + " AND next_attempt<="
+                      + System.currentTimeMillis()
+                      + " ORDER BY"
                       + " created_at LIMIT 20");
           ResultSet rs = ps.executeQuery()) {
         while (rs.next()) {
@@ -333,20 +397,53 @@ public final class BridgeHttp {
                           body))
                   .POST(HttpRequest.BodyPublishers.ofString(body))
                   .build();
-          HttpResponse<String> response =
-              client.send(request, HttpResponse.BodyHandlers.ofString());
-          if (response.statusCode() >= 200 && response.statusCode() < 300) {
+          boolean delivered = false;
+          try {
+            HttpResponse<String> response =
+                client.send(request, HttpResponse.BodyHandlers.ofString());
+            delivered = response.statusCode() >= 200 && response.statusCode() < 300;
+          } catch (Exception unavailable) {
+            /* Retry the same durable receipt. */
+          }
+          requireLease();
+          if (delivered) {
             try (PreparedStatement done =
                 con.prepareStatement(
-                    "UPDATE card_bridge_outbox SET delivered=TRUE WHERE receipt_id=?")) {
+                    "UPDATE card_bridge_outbox SET"
+                        + " delivered=TRUE,last_error=NULL,attempts=attempts+1,last_attempt="
+                        + System.currentTimeMillis()
+                        + " WHERE receipt_id=?")) {
               done.setString(1, receipt);
               done.executeUpdate();
             }
+          } else {
+            long now = System.currentTimeMillis();
+            long delay = Math.min(300000L, 5000L << Math.min(6, rs.getInt(3)));
+            try (PreparedStatement retry =
+                con.prepareStatement(
+                    "UPDATE card_bridge_outbox SET"
+                        + " attempts=attempts+1,last_attempt=?,next_attempt=?,last_error='CALLBACK_UNAVAILABLE'"
+                        + " WHERE receipt_id=?")) {
+              retry.setLong(1, now);
+              retry.setLong(2, now + delay);
+              retry.setString(3, receipt);
+              retry.executeUpdate();
+            }
+            outboxFailure();
           }
         }
       }
     } catch (Exception ignored) {
-      /* The durable outbox retries until the framework acknowledges the receipt. */
+      outboxFailure();
+    }
+  }
+
+  private static void outboxFailure() {
+    long now = System.currentTimeMillis();
+    if (now - lastOutboxLog >= 60000) {
+      lastOutboxLog = now;
+      System.err.println(
+          "card_bridge: OUTBOX_RETRY; inspect callback availability and game readiness");
     }
   }
 }

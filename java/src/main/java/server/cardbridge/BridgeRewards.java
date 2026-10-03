@@ -22,6 +22,61 @@ public final class BridgeRewards {
 
   private static final ConcurrentHashMap<Integer, Pending> pending = new ConcurrentHashMap<>();
 
+  static boolean hasPending(Character chr) {
+    return pending.containsKey(chr.getId());
+  }
+
+  public static Map<String, Object> diagnostics() throws SQLException {
+    Map<String, Object> result = new LinkedHashMap<>();
+    Timestamp oldest = null;
+    long callbacks, attempts, lastAttempt;
+    try (Connection con = DatabaseConnection.getConnection()) {
+      try (Statement st = con.createStatement();
+          ResultSet rs =
+              st.executeQuery(
+                  "SELECT COUNT(*),MIN(created_at) FROM card_bridge_codes WHERE state='PENDING'")) {
+        rs.next();
+        result.put("pendingRewards", rs.getLong(1));
+        oldest = rs.getTimestamp(2);
+      }
+      try (Statement st = con.createStatement();
+          ResultSet rs =
+              st.executeQuery(
+                  "SELECT"
+                      + " COUNT(*),MIN(created_at),COALESCE(MAX(last_attempt),0),COALESCE(SUM(attempts),0)"
+                      + " FROM card_bridge_outbox WHERE delivered=FALSE")) {
+        rs.next();
+        callbacks = rs.getLong(1);
+        Timestamp callbackOldest = rs.getTimestamp(2);
+        if (callbackOldest != null && (oldest == null || callbackOldest.before(oldest)))
+          oldest = callbackOldest;
+        lastAttempt = rs.getLong(3);
+        attempts = rs.getLong(4);
+      }
+      String lastError = null;
+      try (Statement st = con.createStatement();
+          ResultSet rs =
+              st.executeQuery(
+                  "SELECT last_error FROM card_bridge_outbox WHERE delivered=FALSE AND last_error"
+                      + " IS NOT NULL ORDER BY last_attempt DESC LIMIT 1")) {
+        if (rs.next())
+          lastError =
+              "CALLBACK_UNAVAILABLE".equals(rs.getString(1))
+                  ? "CALLBACK_UNAVAILABLE"
+                  : "OUTBOX_UNAVAILABLE";
+      }
+      result.put("pendingCallbacks", callbacks);
+      result.put("oldestPendingAt", oldest == null ? null : oldest.toInstant().toString());
+      result.put(
+          "lastAttemptAt",
+          lastAttempt == 0 ? null : java.time.Instant.ofEpochMilli(lastAttempt).toString());
+      result.put("lastError", lastError);
+      result.put("attempts", attempts);
+      result.put("leaseReady", true);
+      return result;
+    }
+  }
+
   static String fingerprint(String code) {
     return BridgeCrypto.hmac(BridgeHttp.codeKey(), SeriesOne.normalize(code));
   }
@@ -160,13 +215,28 @@ public final class BridgeRewards {
                 }
               }
             }
+            BridgeHttp.requireLease();
             con.commit();
           } catch (Exception e) {
-            con.rollback();
+            try {
+              con.rollback();
+            } catch (SQLException rollbackError) {
+              e.addSuppressed(rollbackError);
+            }
             throw e;
-          } finally {
-            con.setAutoCommit(true);
           }
+        } catch (SQLException uncertain) {
+          // Includes commit acknowledgement and connection-close failures. The old
+          // transaction is closed before a fresh connection verifies its exact claim.
+          if (!grant || claimRecord == null) throw uncertain;
+          boolean committed;
+          try {
+            committed = claimCommitted(claimRecord, chr.getId(), c.getAccID());
+          } catch (SQLException unavailable) {
+            BridgeHttp.uncertainCommit();
+            throw unavailable;
+          }
+          if (!committed) throw uncertain;
         }
         if (grant) {
           pending.put(chr.getId(), claimRecord);
@@ -222,7 +292,7 @@ public final class BridgeRewards {
                 cashReward == null ? List.of(new tools.Pair<>(item, qty)) : List.of()));
         chr.dropMessage(
             5,
-            "Grendel's code granted "
+            "Card code granted "
                 + qty
                 + " "
                 + ItemInformationProvider.getInstance().getName(item)
@@ -262,17 +332,38 @@ public final class BridgeRewards {
     if (!BridgeHttp.enabled()) return;
     Pending p = pending.get(chr.getId());
     if (p == null) return;
+    BridgeHttp.requireLease();
     if (!p.delivered()) throw new SQLException("Reward delivery is incomplete");
     try (PreparedStatement ps =
         con.prepareStatement(
             "UPDATE card_bridge_codes SET state='USED',used_at=? WHERE issuance_id=? AND"
-                + " state='PENDING' AND claim_session=? AND claim_character=?")) {
+                + " state='PENDING' AND claim_session=? AND claim_character=? AND receipt_id=? AND"
+                + " account_id=?")) {
       ps.setLong(1, p.usedAt());
       ps.setString(2, p.issuance());
       ps.setString(3, SESSION);
       ps.setInt(4, chr.getId());
-      if (ps.executeUpdate() != 1)
+      ps.setString(5, p.receipt());
+      ps.setInt(6, chr.getAccountID());
+      if (ps.executeUpdate() != 1) {
+        // A previous commit may have succeeded while its acknowledgement was lost.
+        // Reconcile only the identical claim and its atomic outbox receipt.
+        try (PreparedStatement done =
+            con.prepareStatement(
+                "SELECT c.receipt_id,c.used_at FROM card_bridge_codes c JOIN card_bridge_outbox o"
+                    + " ON o.receipt_id=c.receipt_id WHERE c.issuance_id=? AND c.state='USED'"
+                    + " AND c.claim_session=? AND c.claim_character=? AND c.account_id=?")) {
+          done.setString(1, p.issuance());
+          done.setString(2, SESSION);
+          done.setInt(3, chr.getId());
+          done.setInt(4, chr.getAccountID());
+          try (ResultSet rs = done.executeQuery()) {
+            if (rs.next() && p.receipt().equals(rs.getString(1)) && p.usedAt() == rs.getLong(2))
+              return;
+          }
+        }
         throw new SQLException("Reward claim changed before inventory commit");
+      }
     }
     String body =
         BridgeHttp.JSON.toJson(
@@ -288,6 +379,26 @@ public final class BridgeRewards {
       ps.setString(1, p.receipt());
       ps.setString(2, body);
       ps.executeUpdate();
+    }
+  }
+
+  private static boolean claimCommitted(Pending p, int character, int account) throws SQLException {
+    try (Connection con = DatabaseConnection.getConnection();
+        PreparedStatement ps =
+            con.prepareStatement(
+                "SELECT state,receipt_id,claim_session,claim_character,account_id FROM"
+                    + " card_bridge_codes WHERE issuance_id=? FOR UPDATE")) {
+      con.setNetworkTimeout(Runnable::run, 5000);
+      ps.setQueryTimeout(5);
+      ps.setString(1, p.issuance());
+      try (ResultSet rs = ps.executeQuery()) {
+        return rs.next()
+            && "PENDING".equals(rs.getString(1))
+            && p.receipt().equals(rs.getString(2))
+            && SESSION.equals(rs.getString(3))
+            && character == rs.getInt(4)
+            && account == rs.getInt(5);
+      }
     }
   }
 

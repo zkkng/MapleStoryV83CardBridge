@@ -6,7 +6,7 @@ The [managed Cosmic setup](cosmic-setup.md) automates these services, readiness 
 
 ## State and secrets
 
-`STATE_DIRECTORY` holds encrypted framework SQLite state and a separate purchase journal. The journal contains durable account/order/receipt metadata, not raw codes. Protect it as account data. The game database contains the independent debit receipts, HMAC code indices, inventory, sessions and notification outbox.
+`STATE_DIRECTORY` is an absolute writable path containing encrypted framework SQLite state and a separate purchase journal. The journal contains durable account/order/receipt metadata, website admin grants, preview records and attributed activity, not raw codes. The active catalog is persisted in framework state; the mounted catalog file is only an initial seed. The managed smoke receipt contains its frozen quote and pack/card IDs. Protect all of these as account data. The game database contains independent debit receipts, HMAC code indices, inventory, sessions and notification outbox.
 
 Keep these keys outside public assets and repositories:
 
@@ -27,7 +27,7 @@ After a game receipt, the bridge settles the exact amount into the internal fram
 
 A ten-second recovery pass resumes pending orders and registration. The opening animation does not allocate anything. Closing the browser does not undo or repeat the purchase.
 
-If the game has accepted payment but framework allocation cannot finish, the order remains paid and blocks a replacement purchase for that account. Repair the reported capacity, catalog or key problem, then let the original order resume. Do not delete the journal row, issue a second payment, manually grant another pack, or refund cash while that paid order can still mint. This release provides retry recovery, not a refund/compensation API.
+Administration's Activity/orders view shows sanitized pending work and supports retrying the original order. A retry uses the same durable identity and concurrency guard as background recovery. Do not delete journal rows, issue a second payment, manually grant another pack, or add cash while the original order can still complete. Keep the original catalog and keys available for recovery.
 
 Catalog publication is refused while purchases are unresolved. Same-version content changes are also refused. Keep original versions available until all old orders complete.
 
@@ -43,19 +43,100 @@ USED notification delivery retries until acknowledged. The library also polls re
 
 ## Availability and limits
 
-`/api/library/health` is a readiness check. It requires a signed game response, a signed callback probe, matching authentication modes and accepted cash types. An unavailable game or callback, or mismatched configuration, returns failure. A game outage may leave the public catalog browsable while authenticated purchases report unavailable. Request errors omit internal exception details and plaintext code material. Run `node --env-file=.env tools/doctor.mjs` for a manual-service check, or the managed `doctor` command.
+`/api/library/health` is a readiness check. It requires signed game/callback responses, matching authentication modes and accepted cash types, and usable local state. An unavailable game, callback or writer lease, mismatched configuration, or unusable storage returns failure. During an outage the public catalog remains browsable and economic actions are unavailable. Request errors omit internal exception details and plaintext code material. Run `node --env-file=/etc/card-library/.env tools/doctor.mjs` as the manual service user, or use the managed `doctor` command.
 
 The framework defaults to 50,000 code records, 200,000 code retry/confirmation records and a bounded whole-state SQLite payload. Card copies and history also consume that payload. Those counts are limits, not a promise that every catalog can fill them. Monitor state size and pending orders before growing the installation. One Node writer and one enabled game process are the supported model.
 
 Behind nginx, enable `TRUST_PROXY=1` only when the proxy replaces `X-Real-IP`. The service accepts that header only from loopback. Keep direct service ports private. Configure public TLS, connection/rate limits and request timeouts at the proxy; do not expose the game adapter to the Internet.
 
+For managed service logs, use `docker compose -f /absolute/install/compose.json logs --tail 100 cosmic cards web`. Each service retains at most three 10 MiB Docker log files. For manual services, use `journalctl -u card-library.service -n 100 --no-pager`; configure host journald retention. Inspect pending-work age and capacity in Administration before increasing account or collection volume. Leave disk space for a full runtime-image backup plus a separate safety backup during restore or upgrade. Build-time and steady-state resource needs differ; qualify your host with the intended catalog and load before public rollout.
+
+## Consistent backups and in-place restore
+
+With no native accounts connected, run:
+
+```sh
+python3 tools/cosmic.py --directory /absolute/install backup
+```
+
+The command stops website, card and game writers; dumps MySQL; archives stopped framework/journal state and smoke identity; saves keys, bootstrap configuration, image locks, checksums and exact game/card images; validates the completed backup; then restarts and runs readiness. Copy the printed backup directory off-host privately, preserving all files. The private file inventory is limited to `config.yaml`, `database.env`, `game.env`, `cards.env`, `catalog.json` and optional `test-account.json`. Extra operator notes, password input files and unfinished setup key files stay in place and need their own private backup if you require them. Restore only a trusted operator backup. Checksums detect corruption, not an untrusted party rewriting the backup and manifest together.
+
+For an existing healthy installation at its recorded path:
+
+```sh
+python3 tools/cosmic.py --directory /absolute/install restore --backup /private/offhost/backup
+```
+
+Restore verifies checksums, mandatory SQLite databases and their integrity/schema, archive paths, project identity and database credentials before replacing data, then makes a safety backup. It replaces only the managed `cosmic` database as an exact snapshot, including removal of tables introduced after that backup. Restored services first validate with all public ingress closed. A failure at that stage attempts the safety backup; if rollback also fails, the error names the preserved backup. Once ingress reopens, a later fault stops services and preserves current data instead of discarding a new transaction. A restore intentionally replaces transactions after the chosen backup; schedule maintenance and verify its timestamp first.
+
+Managed backups also include validated `media.tar.gz`: ordinary raster files only, at most 32 MiB per file and 512 MiB total, with no symbolic links or traversal. Older backups without this optional archive remain restorable. Keep media changes paused during backup. See [static images](cosmic-setup.md#original-static-images).
+
+Manual installations need the equivalent stopped-writer backup of MySQL, the entire private state directory, both environment files, active source/runtime version and any locally hosted media. Preserve ownership when restoring. Keep the real native inventory save boundary intact.
+
+## Lost-installation recovery
+
+Use this when the original installation and its Docker volumes are gone. Requirements are Linux/WSL2, Python 3.11+, Git, Docker Compose, a trusted complete off-host backup, enough disk for its images/state, and network access to the locked public MySQL/Node/nginx image digests. The backup carries the original private keys and exact game/card images; no original container or database credentials need to survive elsewhere.
+
+Clone the public bridge tools, read the backup's `installation.json` project value without printing any environment files, and choose an empty absolute destination:
+
+```sh
+git clone https://github.com/zkkng/MapleStoryV83CardBridge.git
+cd MapleStoryV83CardBridge
+python3 tools/cosmic.py --directory /absolute/original/install recover --backup /private/offhost/backup --expect-project cosmic-cards-REPLACE_WITH_RECORDED_ID
+```
+
+Use the exact project from your trusted backup. Wrong identity, corruption, traversal, unexpected files, a nonempty destination or surviving project containers/volumes is rejected before target writes. This command never merges with another deployment. If recovering to a different path, add `--relocate`:
+
+```sh
+python3 tools/cosmic.py --directory /absolute/new/install recover --backup /private/offhost/backup --expect-project cosmic-cards-REPLACE_WITH_RECORDED_ID --relocate
+```
+
+Relocation changes only the recorded directory. The project identity, wallet/card ownership, keys, origin and advertised game address remain unchanged. Reconfigure host TLS/DNS/firewall separately if the host changed. Do not run the original and recovered deployments together. The command restores data before starting game/card writers, rebuilds the private proxy configuration, and checks readiness. A failed recovery stops services and preserves its partial directory and original backup for diagnosis; do not blindly delete unrelated Docker resources.
+
+After recovery, verify `doctor`, administrator grants, known balances, cards and issued obligations. Repeated `smoke` verifies only its original receipt when the disposable account exists. A later upgrade fetches the recorded public Cosmic source revision if the recovered runtime has no source checkout. Custom source forks must restore their privately retained source separately before upgrade; their runtime images alone still support recovery.
+
+An interrupted cold recovery leaves `recovery.pending.json`; ordinary `start` refuses to expose it. Repeat the exact recovery command with `--retry`, the same trusted backup, project, path and relocation option. The marker binds the backup's manifest digest and recovery phase. Before ingress has opened, retry can restore that exact backup. Once the marker records activation, retry instead verifies the existing runtime/volumes/card state and restarts using current databases and configuration; it never imports the backup again. This preserves transactions made after exposure, including across another failed private validation. The marker is cleared only after readiness and activation succeed. A different backup or runtime identity is rejected. Keep all current data and the original backup; do not delete the partial deployment to hide a possible new transaction.
+
+## Internet access
+
+Set the exact HTTPS `PUBLIC_ORIGIN`, such as `https://cards.example.org`, in the private bridge environment. Managed installs can set it initially through `install --origin`; normal service restart applies later configuration changes. The public proxy must preserve `Host` including any port and replace forwarding headers. For a managed deployment, include this in an existing TLS nginx server block with your issued certificate:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name cards.example.org;
+    ssl_certificate /etc/letsencrypt/live/cards.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/cards.example.org/privkey.pem;
+    client_max_body_size 16k;
+    location = /api/library/admin/preview {
+        client_max_body_size 2m;
+        proxy_pass http://127.0.0.1:8490;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_read_timeout 25s;
+    }
+    location / {
+        proxy_pass http://127.0.0.1:8490;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_read_timeout 25s;
+    }
+}
+```
+
+For a manual backend on 8487, use the locations in `deploy/nginx.conf` and set `TRUST_PROXY=1`; that example replaces `X-Real-IP` directly. Test nginx configuration before reloading. Certificate issuance, DNS and router rules belong to your host. Allow public HTTPS and intended native game ports only; leave MySQL, game adapter 8486 and direct bridge 8487 private. Sign in from the exact HTTPS origin, verify the secure session cookie, sign out, and preview a large import to verify the 2 MiB administrator route while collector requests remain limited to 16 KiB.
+
 ## Upgrade
+
+For a managed deployment, update the bridge source and use the [managed `upgrade` command](cosmic-setup.md#upgrade). It builds a candidate, takes a stopped-writer backup and qualifies the candidate with ingress closed before activation. Follow its reported recovery action if a failure occurs.
+
+For a manual installation, use the following procedure.
 
 Stop the bridge, reconcile any outstanding reward saves, and stop the game. Back up state and keys. Run the new installer's `--check`, inspect the game diff, install, rebuild, test and restart with the same persistent keys. Then start the bridge and verify an existing code history and an unopened pack. Preserve the game cash hooks whenever website debits are enabled.
 
 ## Rollout checklist
 
-The included site is a small collecting website for the pinned vanilla Cosmic baseline. Qualify the actual deployment before inviting players:
+The included site is a small collecting website for the pinned vanilla Cosmic baseline. This release is for evaluation with disposable test accounts and test cash. Production allocation/compensation and complete native-client qualification are unfinished; do not take player funds. The following checks remain necessary before a future production rollout:
 
 1. Install into a clean copy of the supported Cosmic revision; run installer checks and the full game test suite.
 2. Use a disposable real game account to sign in from the website. Verify each accepted balance independently and confirm that an insufficient selected balance never spends another balance.
@@ -63,7 +144,7 @@ The included site is a small collecting website for the pinned vanilla Cosmic ba
 4. Interrupt a purchase response after payment and recover the saved purchase. Confirm exactly one debit and one allocation. Complete pending orders before changing the catalog.
 5. If rewards are enabled intentionally, redeem a configured code through a real v83 client's Cash Shop. Verify account restrictions, inventory capacity, USED status, and replay rejection after a restart.
 6. Serve the site behind TLS with the configured exact public origin. Verify secure cookies, sign-out, throttling and proxy headers. Keep the bridge/game private endpoints on loopback or a protected internal network.
-7. Back up both services' persistent data and encryption keys together. Verify ownership and pending-order recovery after a controlled restore. The managed restore command requires the original installation path and project; see [its restore procedure](cosmic-setup.md#private-state-and-backups).
+7. Back up both services' persistent data and encryption keys together. Verify ownership, grants, active catalog and pending-order recovery after a controlled restore. Also test [empty-target recovery](#lost-installation-recovery) from an off-host copy.
 8. Test the site on a phone and with keyboard navigation. Review imported catalogs and source receipts if using external scans. Keep the previous catalog and database backup available for a controlled rollback.
 
-No fixture or CI result replaces a successful real-client and MySQL qualification. Roll out first to a small group after these checks pass, and monitor failed payments, stuck registrations and recovery errors.
+No fixture or CI result replaces successful real-client, MySQL and allocation/compensation qualification. Passing the ordinary collecting workflow alone does not close those release limits.

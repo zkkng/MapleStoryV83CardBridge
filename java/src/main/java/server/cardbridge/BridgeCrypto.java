@@ -8,6 +8,9 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 public final class BridgeCrypto {
+  static final long MAX_SKEW_MILLIS = 60000;
+  static final int MAX_NONCES = 10000;
+
   private BridgeCrypto() {}
 
   public static String sha(String value) {
@@ -47,7 +50,7 @@ public final class BridgeCrypto {
       long now) {
     if (time == null
         || !time.matches("[0-9]{13}")
-        || Math.abs(now - Long.parseLong(time)) > 60000
+        || Math.abs(now - Long.parseLong(time)) > MAX_SKEW_MILLIS
         || nonce == null
         || !nonce.matches("[a-f0-9]{32}")
         || signature == null
@@ -56,7 +59,12 @@ public final class BridgeCrypto {
     if (!MessageDigest.isEqual(
         wanted.getBytes(StandardCharsets.US_ASCII), signature.getBytes(StandardCharsets.US_ASCII)))
       return false;
-    used.entrySet().removeIf(e -> e.getValue() < now - 60000);
-    return used.size() < 10000 && used.putIfAbsent(nonce, now) == null;
+    // A future-dated request stays valid longer than one skew interval after receipt.
+    // Keep its nonce through the inclusive final signature-validity boundary.
+    long expiresAt = Long.parseLong(time) + MAX_SKEW_MILLIS;
+    synchronized (used) {
+      used.entrySet().removeIf(e -> e.getValue() < now);
+      return used.size() < MAX_NONCES && used.putIfAbsent(nonce, expiresAt) == null;
+    }
   }
 }
