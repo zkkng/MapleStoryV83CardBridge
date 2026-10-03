@@ -33,5 +33,5 @@ jobs:
           cache: maven
       - run: python bridge/tools/install-cosmic.py cosmic --check
       - run: python bridge/tools/install-cosmic.py cosmic
-      - run: ./mvnw test
+      - run: bash ./mvnw test
         working-directory: cosmic
