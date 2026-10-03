@@ -18,6 +18,11 @@ const defaultCatalog = JSON.parse(
     "utf8",
   ),
 );
+const remoteImage =
+  "https://maplestoryitcg.weebly.com/uploads/2/3/2302393/01_orig.jpg";
+defaultCatalog.cards[0].metadata.image = remoteImage;
+defaultCatalog.cards[1].metadata.image =
+  "https://other.invalid/not-allowed.jpg";
 async function scenario(rewards) {
   const x = fixture(rewards ? {} : { catalog: defaultCatalog }),
     sessions = new Map();
@@ -66,6 +71,21 @@ async function scenario(rewards) {
   await new Promise((r) => app.listen(port, "127.0.0.1", r));
   const page = await browser.newPage(),
     errors = [];
+  await page.route("https://maplestoryitcg.weebly.com/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "image/png",
+      body: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+        "base64",
+      ),
+    }),
+  );
+  const untrustedImages = [];
+  page.on("request", (request) => {
+    if (request.url().includes("other.invalid"))
+      untrustedImages.push(request.url());
+  });
   page.on("pageerror", (e) => errors.push(e.message));
   try {
     await page.goto(origin + "/library/");
@@ -74,6 +94,28 @@ async function scenario(rewards) {
         document.querySelector("#status").textContent ===
         "Choose a pack to begin.",
     );
+    assert.ok(
+      await page.locator('#collection [data-card^="preview:"]').count(),
+    );
+    if (!rewards) {
+      await page
+        .locator(`#collection img[src="${remoteImage}"]`)
+        .scrollIntoViewIfNeeded();
+      await page.waitForFunction(
+        (url) =>
+          document.querySelector(`#collection img[src="${url}"]`)
+            ?.naturalWidth === 1,
+        remoteImage,
+      );
+      assert.equal(
+        await page
+          .locator(`#collection img[src="${remoteImage}"]`)
+          .getAttribute("referrerpolicy"),
+        "no-referrer",
+      );
+      assert.equal(await page.locator("#code-section").isVisible(), false);
+      assert.deepEqual(untrustedImages, []);
+    }
     assert.equal(await page.locator("#purchase").isDisabled(), true);
     await page
       .getByRole("button", { name: "View contents", exact: true })
@@ -94,6 +136,12 @@ async function scenario(rewards) {
     await page.waitForFunction(() =>
       document.querySelector("#welcome").textContent.includes("Collector"),
     );
+    assert.equal(await page.locator("#header-wallet .balance").count(), 3);
+    assert.ok(
+      (await page.locator("#checkout-balance").textContent()).includes(
+        "10,000",
+      ),
+    );
     await page.locator("#cash-type").selectOption("4");
     await page.locator("#quantity").fill("2");
     await page.getByRole("button", { name: "Buy pack", exact: true }).click();
@@ -101,6 +149,12 @@ async function scenario(rewards) {
     assert.ok(
       (await page.locator("#confirm-text").textContent()).includes(
         "2,000 NX Prepaid",
+      ),
+    );
+    assert.equal(await page.locator("#confirm-wallet .balance").count(), 3);
+    assert.ok(
+      (await page.locator("#confirm-balance").textContent()).includes(
+        "After purchase: 8,000",
       ),
     );
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -124,6 +178,23 @@ async function scenario(rewards) {
       () => document.querySelectorAll("[data-pack]").length === 1,
     );
     await page.locator("#collection .card").first().waitFor();
+    assert.equal((await x.library.state(x.person)).packs.length, 1);
+    assert.equal((await x.library.state(x.person)).owner, x.person.name);
+    assert.ok(
+      (await page.locator("#header-wallet").textContent()).includes("8,000"),
+    );
+    await page.locator("#collection-view").selectOption("all");
+    assert.equal(
+      await page.locator("#collection .card").count(),
+      x.core.catalog().variants.filter((v) => !v.codes?.length).length,
+    );
+    await page.locator("#collection-view").selectOption("missing");
+    assert.equal(
+      await page.locator("#collection .card:not(.missing)").count(),
+      0,
+    );
+    await page.locator("#collection-view").selectOption("owned");
+    assert.ok((await page.locator("#set-progress progress").count()) > 0);
     assert.equal(
       await page.evaluate(() =>
         [...document.querySelectorAll("#collection .copies")].reduce(
@@ -313,7 +384,32 @@ async function scenario(rewards) {
     assert.equal(sessions.size, 0);
     assert.equal(await page.locator(".code-text").count(), 0);
     assert.equal(await page.locator("#opened .card").count(), 0);
-    assert.equal(await page.locator("#collection .card").count(), 0);
+    assert.equal(
+      await page
+        .locator('#collection [data-card]:not([data-card^="preview:"])')
+        .count(),
+      0,
+    );
+    assert.equal(await page.locator("#header-wallet .balance").count(), 0);
+    assert.equal(
+      await page.locator("#collection .card:not(.missing)").count(),
+      0,
+    );
+    await page.locator("[name=username]").fill("Collector");
+    await page.locator("[name=password]").fill("fixture");
+    await page.locator("#login button").click();
+    await page.locator("#account-strip").waitFor({ state: "visible" });
+    sessions.clear();
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.locator("#account-strip").waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#header-wallet .balance").count(), 0);
+    assert.equal(await page.locator("#opened .card").count(), 0);
+    assert.equal(
+      await page
+        .locator('#collection [data-card]:not([data-card^="preview:"])')
+        .count(),
+      0,
+    );
     assert.equal(x.debitCount, rewards ? 12 : 2);
     assert.deepEqual(errors, []);
     console.log(

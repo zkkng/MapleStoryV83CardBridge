@@ -25,11 +25,21 @@
       </div>
       <button id="signin-link" class="quiet">Sign in</button>
     </header>
+    <div class="account-strip" id="account-strip" hidden>
+      <div
+        id="header-wallet"
+        class="header-wallet"
+        aria-label="Your balances"
+      ></div>
+      <small id="sync-status" role="status"></small>
+    </div>
     <main id="main">
       <section class="hero">
         <div>
           <p class="eyebrow">A little collection. A new adventure.</p>
-          <h1>Your next favorite card<br />is waiting in a pack.</h1>
+          <h1 id="hero-title">
+            Your next favorite card<br />is waiting in a pack.
+          </h1>
           <p>
             Open packs, discover cards, and build a collection that stays with
             your game account.
@@ -81,8 +91,9 @@
           >Unopened packs <span id="pack-count">0</span></a
         ><a href="#collection-section"
           >Collection <span id="card-count">0</span></a
-        ><a href="#code-section">Reward codes</a>
+        ><a id="code-link" href="#code-section">Reward codes</a>
       </nav>
+      <div id="overview" class="overview" hidden></div>
       <section id="shop">
         <div class="section-heading">
           <div>
@@ -109,6 +120,7 @@
             /></label>
             <p id="total" class="total"></p>
             <p id="purchase-note" class="muted"></p>
+            <p id="checkout-balance" class="checkout-balance"></p>
             <button id="purchase" disabled>Buy pack</button
             ><small
               >Only your selected balance is charged. Purchases are saved before
@@ -145,6 +157,14 @@
         </div>
         <div class="filters">
           <label
+            >Show<select id="collection-view">
+              <option value="owned">My cards</option>
+              <option value="all">All cards in the catalog</option>
+              <option value="missing">Cards I’m missing</option>
+              <option value="duplicates">My duplicates</option>
+            </select></label
+          >
+          <label
             >Find a card<input
               id="search"
               type="search"
@@ -166,6 +186,15 @@
             </select></label
           >
         </div>
+        <div class="collection-tools">
+          <p id="filter-summary" role="status"></p>
+          <button id="clear-filters" class="quiet">Clear filters</button>
+        </div>
+        <div
+          id="set-progress"
+          class="set-progress"
+          aria-label="Set completion"
+        ></div>
         <div id="collection"></div>
         <button id="more-cards" class="quiet" hidden>Show more cards</button>
       </section>
@@ -238,7 +267,7 @@
         ></span
       >
     </footer>
-    <dialog id="confirm">
+    <dialog id="confirm" aria-labelledby="confirm-title">
       <form method="dialog">
         <button
           class="dialog-close quiet"
@@ -248,15 +277,17 @@
         </button>
       </form>
       <p class="eyebrow">ONE LAST LOOK</p>
-      <h2>Ready to add a pack?</h2>
+      <h2 id="confirm-title">Ready to add a pack?</h2>
       <p id="confirm-text"></p>
+      <div id="confirm-wallet" class="wallet"></div>
+      <p id="confirm-balance" class="checkout-balance"></p>
       <p>Your pack contents are random. Duplicates are possible.</p>
       <div class="actions">
         <button id="confirm-buy">Confirm purchase</button
         ><button id="cancel-buy" class="quiet">Cancel</button>
       </div>
     </dialog>
-    <dialog id="detail">
+    <dialog id="detail" aria-label="Card and pack details">
       <form method="dialog">
         <button class="dialog-close quiet" aria-label="Close card details">
           ×

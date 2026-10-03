@@ -17,7 +17,10 @@ let session = { signedIn: false },
   busy = false,
   opening = new Set(),
   collectionLimit = 60,
-  confirmedInput = null;
+  confirmedInput = null,
+  refreshSequence = 0,
+  syncing = false,
+  displayedCards = new Map();
 const message = (text, error = false) => {
   $("status").textContent = text;
   $("status").classList.toggle("error", error);
@@ -36,7 +39,20 @@ async function api(route, value) {
           },
     body: value === undefined ? undefined : JSON.stringify(value),
   });
-  const data = await res.json();
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    throw Error("The server is temporarily unavailable. Please try again.");
+  }
+  if (res.status === 401 && route !== "login" && route !== "session") {
+    generation++;
+    session = { signedIn: false };
+    state = null;
+    clearPrivateViews();
+    if (catalog) render();
+    message("Your session expired. Sign in again to continue.", true);
+  }
   if (!res.ok)
     throw Object.assign(Error(data.error ?? "Please try again."), {
       code: data.code,
@@ -64,25 +80,54 @@ function saveIntent(value) {
 }
 const rarity = (id) => catalog?.rarities.find((r) => r.id === id)?.name ?? id;
 const setName = (id) => catalog?.lines.find((l) => l.id === id)?.name ?? id;
+function clearPrivateViews() {
+  $("opened").replaceChildren();
+  $("detail").close();
+  $("detail-content").replaceChildren();
+  $("confirm").close();
+  confirmedInput = null;
+  $("search").value = "";
+  $("line-filter").value = "";
+  $("rarity-filter").value = "";
+  $("collection-view").value = "owned";
+  collectionLimit = 60;
+}
 function art(card) {
   const path = card.definition.metadata?.image;
-  return typeof path === "string" &&
-    /^\/assets\/library\/[a-zA-Z0-9_./-]+\.(png|jpg|jpeg|webp)$/.test(path)
-    ? `<img src="${esc(path)}" alt="${esc(card.definition.name)}" loading="lazy">`
+  const valid =
+    typeof path === "string" &&
+    (/^\/assets\/library\/[a-zA-Z0-9_./-]+\.(png|jpg|jpeg|webp)$/.test(path) ||
+      /^https:\/\/maplestoryitcg\.weebly\.com\/uploads\/[0-9/]+\/[a-zA-Z0-9_-]+\.(png|jpg|jpeg)$/.test(
+        path,
+      ));
+  return valid
+    ? `<img src="${esc(path)}" alt="${esc(card.definition.name)}" loading="lazy" decoding="async" referrerpolicy="no-referrer"><span class="image-fallback" hidden>Image unavailable</span>`
     : `<span aria-hidden="true">${esc(card.definition.metadata?.symbol ?? "◇")}</span>`;
+}
+function imageFallbacks(root) {
+  root.querySelectorAll("img").forEach((img) => {
+    const fail = () => {
+      img.hidden = true;
+      img.nextElementSibling.hidden = false;
+    };
+    img.addEventListener("error", fail, { once: true });
+    if (img.complete && !img.naturalWidth) fail();
+  });
 }
 function cardMarkup(card, copies = 0, interactive = true) {
   const tag = interactive ? "button" : "article";
-  return `<${tag} class="card rarity-${esc(card.rarityId)}" ${interactive ? `data-card="${esc(card.id)}"` : ""}><div class="card-art">${art(card)}</div><strong>${esc(card.definition.name)}</strong><small>${esc(rarity(card.rarityId))}${card.definition.type === "code" ? " · Code card" : ""}</small>${copies ? `<span class="copies">×${copies}</span>` : ""}</${tag}>`;
+  const missing = card.preview && copies === 0;
+  return `<${tag} class="card rarity-${esc(card.rarityId)}${missing ? " missing" : ""}" ${interactive ? `data-card="${esc(card.id)}"` : ""}><div class="card-art">${art(card)}</div><strong>${esc(card.definition.name)}</strong><small>${esc(rarity(card.rarityId))}${card.definition.type === "code" ? " · Code card" : ""}</small>${copies ? `<span class="copies">×${copies}</span>` : missing ? '<span class="copies">Not owned</span>' : ""}</${tag}>`;
 }
 function detail(id) {
-  const card = state?.inventory.find((c) => c.id === id);
+  const card =
+    displayedCards.get(id) ?? state?.inventory.find((c) => c.id === id);
   if (!card) return;
-  const owned = state.inventory.filter(
-    (c) => c.variantId === card.variantId,
-  ).length;
+  const owned =
+    state?.inventory.filter((c) => c.variantId === card.variantId).length ?? 0;
   $("detail-content").innerHTML =
     `<p class="eyebrow">${esc(setName(card.definition.lineId))}</p><h2>${esc(card.definition.name)}</h2><div class="card-art">${art(card)}</div><dl><dt>Rarity</dt><dd>${esc(rarity(card.rarityId))}</dd><dt>Copies owned</dt><dd>${owned}</dd></dl>${card.definition.metadata?.description ? `<p>${esc(card.definition.metadata.description)}</p>` : ""}`;
+  imageFallbacks($("detail-content"));
   $("detail").showModal();
 }
 function collection() {
@@ -90,13 +135,39 @@ function collection() {
     state?.inventory.filter((c) => c.definition.type !== "code") ?? [];
   const grouped = new Map();
   for (const c of cards) {
-    const k = c.variantId;
-    const row = grouped.get(k);
-    row ? row.count++ : grouped.set(k, { card: c, count: 1 });
+    const row = grouped.get(c.variantId);
+    row ? row.count++ : grouped.set(c.variantId, { card: c, count: 1 });
   }
+  const available = catalog.variants.flatMap((v) => {
+    const definition = catalog.cards.find((c) => c.id === v.cardId);
+    if (!definition || definition.type === "code") return [];
+    return [
+      {
+        card: {
+          id: "preview:" + v.id,
+          variantId: v.id,
+          rarityId: v.rarityId,
+          definition,
+          preview: true,
+        },
+        count: grouped.get(v.id)?.count ?? 0,
+      },
+    ];
+  });
+  const view = session.signedIn ? $("collection-view").value : "all";
+  $("collection-view").value = view;
+  $("collection-view")
+    .querySelectorAll("option")
+    .forEach((o) => (o.disabled = !session.signedIn && o.value !== "all"));
   const search = $("search").value.trim().toLocaleLowerCase();
-  let rows = [...grouped.values()].filter(
-    ({ card: c }) =>
+  let rows = (
+    view === "owned" || view === "duplicates"
+      ? [...grouped.values()]
+      : available
+  ).filter(
+    ({ card: c, count }) =>
+      (view !== "missing" || count === 0) &&
+      (view !== "duplicates" || count > 1) &&
       c.definition.name.toLocaleLowerCase().includes(search) &&
       (!$("line-filter").value ||
         c.definition.lineId === $("line-filter").value) &&
@@ -112,9 +183,23 @@ function collection() {
             (catalog.rarities.find((r) => r.id === a.card.rarityId)?.rank ?? 0)
           : 0) || a.card.definition.name.localeCompare(b.card.definition.name),
   );
+  displayedCards = new Map(rows.map((r) => [r.card.id, r.card]));
   $("card-count").textContent = num(cards.length);
-  $("collection-summary").textContent = cards.length
+  $("collection-summary").textContent = session.signedIn
     ? `${num(grouped.size)} unique cards · ${num(cards.length)} total`
+    : "Browse cards before you buy. Sign in to start collecting.";
+  $("filter-summary").textContent =
+    `${num(rows.length)} matching card${rows.length === 1 ? "" : "s"}`;
+  $("set-progress").innerHTML = session.signedIn
+    ? catalog.lines
+        .map((line) => {
+          const lineCards = available.filter(
+            (r) => r.card.definition.lineId === line.id,
+          );
+          const owned = lineCards.filter((r) => r.count > 0).length;
+          return `<article><div><strong>${esc(line.name)}</strong><span>${owned} / ${lineCards.length}</span></div><progress aria-label="${esc(line.name)} completion" value="${owned}" max="${lineCards.length || 1}"></progress></article>`;
+        })
+        .join("")
     : "";
   $("collection").innerHTML = rows.length
     ? `<div class="card-grid">${rows
@@ -122,21 +207,31 @@ function collection() {
         .map((r) => cardMarkup(r.card, r.count))
         .join("")}</div>`
     : empty(
-        session.signedIn
-          ? cards.length
-            ? "No matching cards"
-            : "Your collection starts here"
-          : "A collection of your own",
-        session.signedIn
-          ? cards.length
-            ? "Try a different search or filter."
-            : "Open your first pack to add cards."
-          : "Sign in to see your cards.",
+        view === "owned" && !cards.length
+          ? "Your collection starts here"
+          : "No matching cards",
+        view === "owned" && !cards.length
+          ? "Open your first pack to add cards, or browse all cards in the catalog."
+          : "Try a different view, search or filter.",
       );
   $("more-cards").hidden = rows.length <= collectionLimit;
   $("collection")
     .querySelectorAll("[data-card]")
     .forEach((b) => (b.onclick = () => detail(b.dataset.card)));
+  imageFallbacks($("collection"));
+}
+function walletMarkup() {
+  return (state?.wallet.balances ?? [])
+    .filter((b) =>
+      (state.wallet.acceptedCashTypes ?? catalog.acceptedCashTypes).includes(
+        b.cashType,
+      ),
+    )
+    .map(
+      (b) =>
+        `<div class="balance">${esc(b.name)}<strong>${num(b.amount)}</strong></div>`,
+    )
+    .join("");
 }
 function codes() {
   const rows =
@@ -216,6 +311,10 @@ function total() {
   $("total").textContent = valid
     ? `${num(amount)} ${$("cash-type").selectedOptions[0]?.textContent ?? "points"}`
     : "Choose a valid quantity";
+  $("checkout-balance").textContent =
+    session.signedIn && balance
+      ? `Available: ${num(balance.amount)} ${balance.name}${valid && amount <= balance.amount ? " · After purchase: " + num(balance.amount - amount) : ""}`
+      : "";
   const pending =
     state?.orders.some((o) => !["complete", "rejected"].includes(o.state)) ||
     !!intent();
@@ -240,6 +339,21 @@ function total() {
             : "";
 }
 function render() {
+  $("hero-title").textContent = session.signedIn
+    ? "Your card library"
+    : "Your next favorite card is waiting in a pack.";
+  const hasRewards =
+    catalog.variants.some((v) => v.codes?.length) || !!state?.codes.length;
+  $("code-link").hidden = !hasRewards;
+  $("code-section").hidden = !hasRewards;
+  document.body.classList.toggle("authenticated", session.signedIn);
+  $("account-strip").hidden = !session.signedIn;
+  $("header-wallet").innerHTML = walletMarkup();
+  $("overview").hidden = !session.signedIn;
+  const ownedCards =
+    state?.inventory.filter((c) => c.definition.type !== "code") ?? [];
+  $("overview").innerHTML =
+    `<div><strong>${num(state?.packs.filter((p) => !p.openedAt).length ?? 0)}</strong><span>Packs to open</span></div><div><strong>${num(ownedCards.length)}</strong><span>Cards collected</span></div><div><strong>${num(new Set(ownedCards.map((c) => c.variantId)).size)}</strong><span>Unique cards</span></div>`;
   $("account").hidden = session.signedIn;
   $("signed-in").hidden = !session.signedIn;
   $("signin-link").hidden = session.signedIn;
@@ -358,21 +472,32 @@ function render() {
 }
 async function refresh() {
   const version = generation,
-    next = await api("session");
-  if (version !== generation) return;
+    sequence = ++refreshSequence;
+  const current = () => version === generation && sequence === refreshSequence;
+  const next = await api("session");
+  if (!current()) return;
   const freshCatalog = await api("catalog");
-  if (version !== generation) return;
+  if (!current()) return;
+  const nextState = next.signedIn ? await api("state") : null;
+  if (!current()) return;
+  if (
+    nextState?.owner &&
+    nextState.owner.toLowerCase() !== next.username.toLowerCase()
+  )
+    throw Error("Your account changed. Refresh before continuing.");
+  if (
+    next.username !== session.username ||
+    next.signedIn !== session.signedIn
+  ) {
+    generation++;
+    clearPrivateViews();
+  } else if (!next.signedIn) clearPrivateViews();
   session = next;
   catalog = freshCatalog;
-  const nextState = session.signedIn ? await api("state") : null;
-  if (version !== generation) return;
   state = nextState;
-  if (!session.signedIn) {
-    $("opened").replaceChildren();
-    $("detail").close();
-    $("detail-content").replaceChildren();
-    $("confirm").close();
-  }
+  $("sync-status").textContent =
+    "Updated " +
+    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   render();
 }
 async function openPack(id) {
@@ -385,7 +510,11 @@ async function openPack(id) {
     if (version !== generation) return;
     $("opened").innerHTML =
       `<div class="opening"><h3>Your new cards</h3><p>Saved to your collection. They're yours to keep.</p><div class="card-grid">${result.cards.map((c) => cardMarkup(c, 0, false)).join("")}</div><div class="actions"><button id="finish-opening">Done</button><a class="button quiet" href="#collection-section">View collection</a></div></div>`;
-    $("finish-opening").onclick = () => $("opened").replaceChildren();
+    imageFallbacks($("opened"));
+    $("finish-opening").onclick = () => {
+      $("opened").replaceChildren();
+      $("collection-section").scrollIntoView();
+    };
     await refresh();
     if (version === generation)
       message("Your cards are saved in your collection.");
@@ -541,6 +670,11 @@ $("buy").onsubmit = async (e) => {
     confirmedInput = { key: crypto.randomUUID(), ...quote };
     $("confirm-text").textContent =
       `${quantity} × ${product.name} for ${num(quote.price.amount)} ${label}. Only this balance will be charged.`;
+    const balance = state?.wallet.balances.find((b) => b.cashType === cashType);
+    $("confirm-wallet").innerHTML = walletMarkup();
+    $("confirm-balance").textContent = balance
+      ? `Available: ${num(balance.amount)} ${label} · After purchase: ${num(balance.amount - quote.price.amount)}`
+      : "";
     $("confirm").showModal();
   } catch (e) {
     if (version === generation) message(e.message, true);
@@ -565,11 +699,24 @@ $("retry").onclick = async () => {
 };
 for (const id of ["product", "cash-type", "quantity"])
   $(id).addEventListener("input", total);
-for (const id of ["search", "line-filter", "rarity-filter", "sort"])
+for (const id of [
+  "search",
+  "line-filter",
+  "rarity-filter",
+  "sort",
+  "collection-view",
+])
   $(id).addEventListener("input", () => {
     collectionLimit = 60;
     collection();
   });
+$("clear-filters").onclick = () => {
+  $("search").value = "";
+  $("line-filter").value = "";
+  $("rarity-filter").value = "";
+  collectionLimit = 60;
+  collection();
+};
 $("more-cards").onclick = () => {
   collectionLimit += 60;
   collection();
@@ -595,3 +742,42 @@ $("more-codes").onclick = async () => {
 refresh()
   .then(() => message("Choose a pack to begin."))
   .catch((e) => message(e.message + " Refresh the page to try again.", true));
+
+const layoutObserver = new ResizeObserver(() => {
+  document.documentElement.style.setProperty(
+    "--topbar-height",
+    document.querySelector(".topbar").offsetHeight + "px",
+  );
+  document.documentElement.style.setProperty(
+    "--wallet-height",
+    $("account-strip").offsetHeight + "px",
+  );
+});
+layoutObserver.observe(document.querySelector(".topbar"));
+layoutObserver.observe($("account-strip"));
+async function backgroundRefresh() {
+  if (
+    !session.signedIn ||
+    document.hidden ||
+    busy ||
+    syncing ||
+    opening.size ||
+    $("confirm").open ||
+    $("detail").open
+  )
+    return;
+  syncing = true;
+  try {
+    await refresh();
+  } catch {
+    $("sync-status").textContent = "Updates paused · use Refresh";
+  } finally {
+    syncing = false;
+  }
+}
+setInterval(backgroundRefresh, 30000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) backgroundRefresh();
+});
+window.addEventListener("focus", backgroundRefresh);
+window.addEventListener("online", backgroundRefresh);

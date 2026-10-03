@@ -12,10 +12,11 @@ The included website works independently. No Grendel website, custom account por
 
 ## What players can do
 
-- Sign in with an existing Cosmic account and view the accepted game balances.
+- Sign in with an existing Cosmic account. Accepted balances stay visible while browsing, with available and remaining funds in checkout and confirmation.
 - Browse packs, inspect their contents and per-draw probabilities, select a balance, and confirm the total before paying.
 - Open unopened packs. Opened packs become collection cards; there is no pack-history view.
-- Search and filter cards by set and rarity, sort them, inspect details, and see duplicate counts.
+- Browse the card catalog before signing in. Search and filter cards by set and rarity, sort them, inspect details, and see duplicate counts.
+- Switch between owned cards, missing cards, duplicates and the full catalog, and track completion of each set.
 - Reveal and copy any enabled reward codes, check their status, and load older codes.
 - Recover an interrupted purchase using its original saved request without paying twice.
 
@@ -51,14 +52,20 @@ For an already operated Cosmic deployment, the [adapter guide](docs/install.md) 
 
 ## Add the real iTCG sets, optionally
 
-The [optional importer](docs/itcg-import.md) downloads scans from the MapleStory Card Game Guide into your own external asset directory and builds one pack for each selected English set. Artwork is not included in this repository. The five source galleries are Set 1, OMG Bosses!, P3ts, NPC Heroes, and Behold Zakum.
+The [optional importer](docs/itcg-import.md) builds one pack for each selected English set from the MapleStory Card Game Guide. By default the browser loads scans directly from that source website; the bridge does not host copies. Artwork is not included in this repository. The five source galleries are Set 1, OMG Bosses!, P3ts, NPC Heroes, and Behold Zakum.
 
 ```sh
 python tools/import-itcg.py --inspect
 python tools/import-itcg.py --output external/itcg --sets 1,2,3,4,5 --catalog-version 3
 ```
 
-Review the generated catalog, then set `CATALOG_PATH=./external/itcg/catalog.json` and `ASSET_ROOT=./external/itcg/assets` in your private configuration. Restart after finishing pending purchases. The importer does not change the live configuration, replace existing files, or set up a reward pool. It creates eight-card packs with equal per-card weights, not a simulation of historical booster collation.
+For a new managed Cosmic deployment with these five packs:
+
+```sh
+python3 tools/cosmic.py --directory ../CosmicITCGServer install --catalog external/itcg/catalog.json --test-account
+```
+
+For a manual bridge, set `CATALOG_PATH=./external/itcg/catalog.json` in its private configuration. Existing managed deployments use `private/catalog.json`; finish pending purchases, increase the catalog version, and keep definitions needed by issued cards when migrating. The importer never changes live configuration, replaces existing files or sets up rewards. It creates eight-card packs with equal per-card weights, not historical booster collation. `--download` optionally saves local scans; that mode needs an asset directory and mount.
 
 ## Customize packs and payment
 

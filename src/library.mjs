@@ -40,8 +40,9 @@ export class Library {
       (t) => this.acceptedCashTypes.includes(t),
     );
     return {
+      owner: person.name,
       wallet,
-      packs: this.core.packs(actor),
+      packs: this.core.packs(actor).filter((pack) => !pack.openedAt),
       inventory: this.core.inventory(actor),
       codes,
       albums: this.core.albums(actor),

@@ -134,10 +134,23 @@ def secure_seed_account(game):
         path.write_text(text.rstrip() + "\n\n" + statement + "\n", encoding="utf-8")
 
 
-def managed_catalog(series_one=False):
+def managed_catalog(series_one=False, source=None):
     catalog = json.loads(
-        (ROOT / "data/catalog.example.json").read_text(encoding="utf-8")
+        (Path(source) if source else ROOT / "data/catalog.example.json").read_text(
+            encoding="utf-8"
+        )
     )
+    if not isinstance(catalog, dict) or not all(
+        isinstance(catalog.get(name), list) and catalog[name]
+        for name in ["lines", "cards", "variants", "rarities", "products"]
+    ):
+        raise RuntimeError("Choose a complete framework catalog with cards and packs.")
+    if any(v.get("codes") for v in catalog["variants"]) or any(
+        c.get("type") == "code" for c in catalog["cards"]
+    ):
+        raise RuntimeError(
+            "The managed catalog input must contain collectibles only; use --series-one to add the supplied code insert."
+        )
     if series_one:
         line = catalog["lines"][0]["id"]
         catalog["cards"].append(
@@ -378,6 +391,17 @@ def install(args):
             "Choose separate valid web and login ports outside the channel range."
         )
     options = {k: v for k, v in vars(args).items() if k != "directory"}
+    custom_catalog = getattr(args, "catalog", None)
+    if custom_catalog and (
+        Path(custom_catalog).resolve() == directory
+        or directory in Path(custom_catalog).resolve().parents
+    ):
+        raise RuntimeError(
+            "Keep the source catalog outside the managed installation directory."
+        )
+    prepared_catalog = managed_catalog(args.series_one, custom_catalog)
+    if custom_catalog:
+        options["catalogHash"] = file_hash(Path(custom_catalog))
     marker = directory / "setup.pending.json"
     if directory.exists() and any(directory.iterdir()):
         if (
@@ -535,7 +559,7 @@ def install(args):
     )
     private_file(
         private / "catalog.json",
-        json.dumps(managed_catalog(args.series_one), indent=2) + "\n",
+        json.dumps(prepared_catalog, indent=2) + "\n",
     )
     # Only these non-key runtime files are mounted. The private parent stays owner-only.
     (private / "config.yaml").chmod(0o644)
@@ -552,6 +576,10 @@ def install(args):
         "webPort": args.web_port,
         "loginPort": args.login_port,
         "seriesOneEnabled": args.series_one,
+        "smokeCollectibles": sum(
+            slot["count"] for slot in prepared_catalog["products"][0]["slots"]
+        )
+        - (1 if args.series_one else 0),
         "bridgeHash": bridge_snapshot(directory),
     }
     private_file(
@@ -672,7 +700,7 @@ const input=JSON.parse(await new Promise(resolve=>{let s='';process.stdin.on('da
 async function call(route,body){const r=await fetch(base+'/api/library/'+route,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json','X-CSRF-Token':csrf},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(15000)});const v=await r.json();if(!r.ok)throw Error(v.code??'SMOKE_FAILED');if(r.headers.get('set-cookie'))cookie=r.headers.get('set-cookie').split(';')[0];if(v.csrf)csrf=v.csrf;return v;}
 await call('session');await call('login',{username:input.username,password:input.password});let s=await call('state');let pack=s.packs[0]??s.orders.find(o=>o.state==='complete')?.result?.packs?.[0];
 if(!pack){const catalog=await call('catalog'),quote=await call('quote',{productId:catalog.products[0].id,quantity:1,cashType:4}),key='setup-smoke-v1';const bought=await call('buy',{...quote,key});const replay=await call('buy',{...quote,key});if(JSON.stringify(bought)!==JSON.stringify(replay))throw Error('RETRY_MISMATCH');pack=bought.packs[0];}
-const opened=await call('open',{packId:pack.id,key:'setup-open-'+pack.id});if(opened.cards.length!==(input.seriesOne?9:8))throw Error('PACK_CONTENTS');s=await call('state');if(s.inventory.filter(c=>c.definition.type!=='code').length!==8||s.codes.length!==(input.seriesOne?1:0))throw Error('PACK_CONTENTS');if(input.seriesOne){if(s.codes[0].registration!=='ready')throw Error('REGISTRATION');const revealed=await call('reveal',{codeId:s.codes[0].id,key:'setup-reveal-'+s.codes[0].id});if(!/^(C0[123])?[A-Z2-9]{15}$/.test(revealed.code))throw Error('CODE_PATTERN');}await call('logout',{});if((await call('session')).signedIn)throw Error('LOGOUT');console.log('Setup smoke passed: native login, selected debit, safe retry, profile contents and logout.');
+const opened=await call('open',{packId:pack.id,key:'setup-open-'+pack.id});if(opened.cards.length!==input.collectibles+(input.seriesOne?1:0))throw Error('PACK_CONTENTS');s=await call('state');if(s.inventory.filter(c=>c.definition.type!=='code').length!==input.collectibles||s.codes.length!==(input.seriesOne?1:0))throw Error('PACK_CONTENTS');if(input.seriesOne){if(s.codes[0].registration!=='ready')throw Error('REGISTRATION');const revealed=await call('reveal',{codeId:s.codes[0].id,key:'setup-reveal-'+s.codes[0].id});if(!/^(C0[123])?[A-Z2-9]{15}$/.test(revealed.code))throw Error('CODE_PATTERN');}await call('logout',{});if((await call('session')).signedIn)throw Error('LOGOUT');console.log('Setup smoke passed: native login, selected debit, safe retry, profile contents and logout.');
 """
     compose(
         directory,
@@ -683,7 +711,13 @@ const opened=await call('open',{packId:pack.id,key:'setup-open-'+pack.id});if(op
         "--input-type=module",
         "-e",
         script,
-        data=json.dumps({**account, "seriesOne": meta.get("seriesOneEnabled", False)}),
+        data=json.dumps(
+            {
+                **account,
+                "seriesOne": meta.get("seriesOneEnabled", False),
+                "collectibles": meta.get("smokeCollectibles", 8),
+            }
+        ),
     )
     print(
         "Setup smoke passed. Native-client Cash Shop redemption is a separate gameplay check."
@@ -1079,6 +1113,10 @@ def main():
         "--series-one",
         action="store_true",
         help="Enable the Series One provider and add one code insert per pack",
+    )
+    setup.add_argument(
+        "--catalog",
+        help="Install a collectible catalog, including imported packs with direct-source images",
     )
     for name in ["start", "doctor", "stop", "backup", "upgrade", "smoke"]:
         commands.add_parser(name)

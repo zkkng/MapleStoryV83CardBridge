@@ -83,6 +83,8 @@ Cash types are 1=NX Credit, 2=Maple Points and 4=NX Prepaid. Funding requires a 
 
 ## Customize the catalog
 
+For a new installation, `install --catalog path/to/catalog.json` installs your collectible catalog. The optional [iTCG importer](itcg-import.md) generates separate packs whose images load directly from the source website, requiring no asset mount. Keep the input catalog outside the managed installation directory. Setup records its hash and refuses to resume with changed contents. Reward-bearing input catalogs are rejected; `--series-one` explicitly adds the supplied insert. With `--test-account`, the first pack must cost no more than its 5,000 NX Prepaid starting balance.
+
 The managed catalog is `CosmicCardServer/private/catalog.json`, mounted read-only into the card service. Change this file rather than giving the container a host-only `CATALOG_PATH`. For the Series One profile, keep the generated insert's pool ID `v83.series-one`. Increase the catalog version after content changes and the product revision after changing pack terms. Prices and collectible rarity weights belong to the catalog; Series One game rewards remain constrained by the adapter whitelist. Imported scans do not enable this provider or create code inserts.
 
 Finish pending purchases, stop the services, back up the original catalog file privately, edit it, and start again. The card service rejects changed content under the same version and refuses catalog publication while a purchase is unresolved. Restore the original file if validation fails. The upgrade command preserves this customized file. The [framework runtime](framework-runtime.md) supplies catalog and card contracts; game assets and your card artwork are separate inputs.

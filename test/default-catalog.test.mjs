@@ -26,6 +26,7 @@ test("default Shapes purchase mints only collectibles and never registers a rewa
   assert.equal(opened.cards.length, 8);
   assert(opened.cards.every((c) => c.definition.type === "collectible"));
   assert.equal((await x.library.state(x.person)).codes.length, 0);
+  assert.equal((await x.library.state(x.person)).packs.length, 0);
   assert.equal(x.registrations.size, 0);
   assert.equal(x.maplePoints.get(1), 9000);
   assert.equal(x.balances.get(1), 10000);

@@ -130,10 +130,11 @@ export function createLibraryHttp({
       fail("NOT_FOUND", "Page not found.", 404);
     res.writeHead(200, {
       "Content-Type": types[extname(file)],
-      "Cache-Control":
-        [".html", ".json", ".css", ".js", ".mjs"].includes(extname(file))
-          ? "no-cache"
-          : "public, max-age=86400",
+      "Cache-Control": [".html", ".json", ".css", ".js", ".mjs"].includes(
+        extname(file),
+      )
+        ? "no-cache"
+        : "public, max-age=86400",
     });
     res.end(await readFile(file));
   }
@@ -143,7 +144,7 @@ export function createLibraryHttp({
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://maplestoryitcg.weebly.com; media-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'",
     );
     try {
       const url = new URL(req.url, "http://local"),

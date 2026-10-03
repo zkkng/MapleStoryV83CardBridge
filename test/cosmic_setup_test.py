@@ -16,6 +16,23 @@ spec.loader.exec_module(setup)
 
 
 class SetupSafety(unittest.TestCase):
+    def test_custom_collectible_catalog_installs_without_rewards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            catalog = setup.managed_catalog()
+            catalog["name"] = "External card collection"
+            path.write_text(json.dumps(catalog), encoding="utf-8")
+            self.assertEqual(setup.managed_catalog(source=path), catalog)
+            self.assertFalse(
+                any(
+                    v.get("codes")
+                    for v in setup.managed_catalog(source=path)["variants"]
+                )
+            )
+            path.write_text(json.dumps(setup.managed_catalog(True)), encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                setup.managed_catalog(source=path)
+
     def test_reward_profile_is_explicit_and_inserts_one_code_per_pack(self):
         plain = setup.managed_catalog()
         self.assertFalse(any(v.get("codes") for v in plain["variants"]))
@@ -54,6 +71,8 @@ class SetupSafety(unittest.TestCase):
                 web_port=8490,
                 login_port=8484,
                 test_account=True,
+                series_one=False,
+                catalog=None,
             )
             options = {k: v for k, v in vars(args).items() if k != "directory"}
             setup.private_file(p / "setup.pending.json", json.dumps(options))
