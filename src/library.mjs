@@ -102,7 +102,7 @@ export class Library {
     if (this.journal.pending().some((o) => o.accountId === person.accountId))
       fail(
         "PURCHASE_PENDING",
-        "Your previous purchase is still being completed. Please check the opening table shortly.",
+        "Your previous purchase is still being completed. Please check the saved purchase shortly.",
         409,
       );
     const quote = this.quote(person, clean);
@@ -299,7 +299,7 @@ export class Library {
     if (this.journal.registration(input.codeId) !== "ready")
       fail(
         "CODE_PREPARING",
-        "Grendel is binding this code to the Cash Shop. Please try shortly.",
+        "The server is registering this code with the Cash Shop. Please try shortly.",
         409,
       );
     return this.core.revealCode(actor, {

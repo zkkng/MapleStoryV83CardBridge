@@ -39,10 +39,17 @@ jobs:
   managed-cosmic:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      matrix:
+        include:
+          - profile: collectibles
+            options: ""
+          - profile: series-one
+            options: "--series-one"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install a complete fresh Cosmic deployment
-        run: python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" install --test-account
+        run: python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" install --test-account ${{ matrix.options }}
       - name: Check funding retries and readiness
         run: |
           python3 tools/cosmic.py --directory "$RUNNER_TEMP/CosmicCardServer" account fund CardTest --cash-type 4 --amount 5000 --request-id setup-funding-v1

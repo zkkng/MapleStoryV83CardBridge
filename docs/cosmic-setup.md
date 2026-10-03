@@ -26,7 +26,15 @@ The installation directory must be separate from the source repository and empty
 
 Open `http://127.0.0.1:8490/library/`. Setup's final readiness check proves the signed game request, the signed provider callback, matching authentication mode and accepted cash types, and the website proxy. It fails when these disagree. The public catalog remains readable during a game outage, but the readiness endpoint returns failure.
 
-`--test-account` creates a disposable `CardTest` native game account with 5,000 NX Prepaid. Setup purchases one 1,000-unit example pack, retries the same purchase, opens eight collectibles and one code insert, checks registration, reveals the code and signs out. Credentials stay in `CosmicCardServer/private/test-account.json`; they are never printed. Keep this account for local testing only. The normal install omits it and grants no cash. The upstream demonstration administrator is disabled during the seed migration.
+`--test-account` creates a disposable `CardTest` native game account with 5,000 NX Prepaid. Setup purchases one 1,000-unit Shapes pack, retries the same purchase, opens its eight collectibles and signs out. Credentials stay in `CosmicCardServer/private/test-account.json`; they are never printed. Keep this account for local testing only. The normal install omits it and grants no cash. The upstream demonstration administrator is disabled during the seed migration.
+
+For a pack with exactly one dedicated Series One code insert, enable its complete profile explicitly:
+
+```sh
+python3 tools/cosmic.py --directory ../CosmicRewardsServer install --series-one --test-account
+```
+
+This adds the insert to each default pack and sets `ENABLE_SERIES_ONE_REWARDS=1`. Verification opens eight collectibles plus one code card, checks its game registration and reveals its code. The profile does not download card scans. A normal install leaves the reward provider disabled and issues no item codes.
 
 An interrupted install leaves `setup.pending.json`. Repeat the **same command and options** to resume without replacing persistent keys, duplicating funding or buying another verification pack. A completed installation refuses a second install; use `start` or `upgrade` instead. Do not delete the marker, keys or volumes to recover an interrupted purchase.
 
@@ -49,7 +57,7 @@ python3 tools/cosmic.py --directory ../CosmicCardServer start
 python3 tools/cosmic.py --directory ../CosmicCardServer smoke
 ```
 
-`smoke` requires the optional setup account and reuses its existing pack. Stop refuses while a game account is logged in. Containers restart automatically after host or process failure; volumes retain the game database and encrypted card state. Start waits for database, adapter, callback and proxy readiness.
+`smoke` requires the optional setup account and reuses its existing pack, including an already opened pack. It checks eight collectibles in the default profile, or eight plus a registered code in the Series One profile. Stop refuses while a game account is logged in. Containers restart automatically after host or process failure; volumes retain the game database and encrypted card state. Start waits for database, adapter, callback and proxy readiness.
 
 For startup diagnostics:
 
@@ -75,7 +83,7 @@ Cash types are 1=NX Credit, 2=Maple Points and 4=NX Prepaid. Funding requires a 
 
 ## Customize the catalog
 
-The managed catalog is `CosmicCardServer/private/catalog.json`, mounted read-only into the card service. Change this file rather than giving the container a host-only `CATALOG_PATH`. Keep the generated insert's pool ID `v83.series-one` for the supplied reward provider. Increase the catalog version after content changes and the product revision after changing pack terms. Prices and collectible rarity weights belong to the catalog; Series One game rewards remain constrained by the adapter whitelist.
+The managed catalog is `CosmicCardServer/private/catalog.json`, mounted read-only into the card service. Change this file rather than giving the container a host-only `CATALOG_PATH`. For the Series One profile, keep the generated insert's pool ID `v83.series-one`. Increase the catalog version after content changes and the product revision after changing pack terms. Prices and collectible rarity weights belong to the catalog; Series One game rewards remain constrained by the adapter whitelist. Imported scans do not enable this provider or create code inserts.
 
 Finish pending purchases, stop the services, back up the original catalog file privately, edit it, and start again. The card service rejects changed content under the same version and refuses catalog publication while a purchase is unresolved. Restore the original file if validation fails. The upgrade command preserves this customized file. The [framework runtime](framework-runtime.md) supplies catalog and card contracts; game assets and your card artwork are separate inputs.
 

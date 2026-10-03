@@ -4,4 +4,9 @@ node_modules/
 state/
 *.sqlite*
 *.log
+
+# Optional imported card scans and catalogs remain local.
+/external/
+
 __pycache__/
+*.pyc

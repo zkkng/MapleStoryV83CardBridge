@@ -134,6 +134,49 @@ def secure_seed_account(game):
         path.write_text(text.rstrip() + "\n\n" + statement + "\n", encoding="utf-8")
 
 
+def managed_catalog(series_one=False):
+    catalog = json.loads(
+        (ROOT / "data/catalog.example.json").read_text(encoding="utf-8")
+    )
+    if series_one:
+        line = catalog["lines"][0]["id"]
+        catalog["cards"].append(
+            {
+                "id": "series-one-code",
+                "lineId": line,
+                "name": "Series One code card",
+                "type": "code",
+                "behavior": {"tradable": False, "albumEligible": True},
+            }
+        )
+        catalog["variants"].append(
+            {
+                "id": "series-one-code.standard",
+                "cardId": "series-one-code",
+                "rarityId": catalog["rarities"][0]["id"],
+                "codes": [
+                    {
+                        "id": "game",
+                        "poolId": "v83.series-one",
+                        "reveal": "peel",
+                        "transfer": "block",
+                        "title": "Series One reward",
+                    }
+                ],
+            }
+        )
+        for product in catalog["products"]:
+            product["slots"].append(
+                {
+                    "id": "series-one-insert",
+                    "role": "insert",
+                    "count": 1,
+                    "pool": [{"variantId": "series-one-code.standard", "weight": 1}],
+                }
+            )
+    return catalog
+
+
 def bridge_snapshot(directory):
     destination = directory / "bridge"
     if destination.is_symlink():
@@ -470,6 +513,7 @@ def install(args):
                 "PORT=8487",
                 "ACCEPTED_CASH_TYPES=1,2,4",
                 "TRUST_PROXY=1",
+                "ENABLE_SERIES_ONE_REWARDS=" + ("1" if args.series_one else "0"),
             ]
         )
         + "\n",
@@ -490,7 +534,8 @@ def install(args):
         + "\n",
     )
     private_file(
-        private / "catalog.json", (ROOT / "data/catalog.example.json").read_bytes()
+        private / "catalog.json",
+        json.dumps(managed_catalog(args.series_one), indent=2) + "\n",
     )
     # Only these non-key runtime files are mounted. The private parent stays owner-only.
     (private / "config.yaml").chmod(0o644)
@@ -506,6 +551,7 @@ def install(args):
         "gameHost": args.game_host,
         "webPort": args.web_port,
         "loginPort": args.login_port,
+        "seriesOneEnabled": args.series_one,
         "bridgeHash": bridge_snapshot(directory),
     }
     private_file(
@@ -624,9 +670,9 @@ const origin=process.env.PUBLIC_ORIGIN,base='http://127.0.0.1:8487';
 let cookie='',csrf='';
 const input=JSON.parse(await new Promise(resolve=>{let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>resolve(s))}));
 async function call(route,body){const r=await fetch(base+'/api/library/'+route,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json','X-CSRF-Token':csrf},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(15000)});const v=await r.json();if(!r.ok)throw Error(v.code??'SMOKE_FAILED');if(r.headers.get('set-cookie'))cookie=r.headers.get('set-cookie').split(';')[0];if(v.csrf)csrf=v.csrf;return v;}
-await call('session');await call('login',input);let s=await call('state');let pack=s.packs[0];
+await call('session');await call('login',{username:input.username,password:input.password});let s=await call('state');let pack=s.packs[0]??s.orders.find(o=>o.state==='complete')?.result?.packs?.[0];
 if(!pack){const catalog=await call('catalog'),quote=await call('quote',{productId:catalog.products[0].id,quantity:1,cashType:4}),key='setup-smoke-v1';const bought=await call('buy',{...quote,key});const replay=await call('buy',{...quote,key});if(JSON.stringify(bought)!==JSON.stringify(replay))throw Error('RETRY_MISMATCH');pack=bought.packs[0];}
-const opened=await call('open',{packId:pack.id,key:'setup-open-'+pack.id});if(opened.cards.length!==9)throw Error('PACK_CONTENTS');s=await call('state');if(s.inventory.filter(c=>c.definition.type!=='code').length!==8||s.codes.length!==1||s.codes[0].registration!=='ready')throw Error('REGISTRATION');const revealed=await call('reveal',{codeId:s.codes[0].id,key:'setup-reveal-'+s.codes[0].id});if(!/^(C0[123])?[A-Z2-9]{15}$/.test(revealed.code))throw Error('CODE_PATTERN');await call('logout',{});if((await call('session')).signedIn)throw Error('LOGOUT');console.log('Setup smoke passed: native login, selected debit, safe retry, 8+1 pack, registered code, reveal and logout.');
+const opened=await call('open',{packId:pack.id,key:'setup-open-'+pack.id});if(opened.cards.length!==(input.seriesOne?9:8))throw Error('PACK_CONTENTS');s=await call('state');if(s.inventory.filter(c=>c.definition.type!=='code').length!==8||s.codes.length!==(input.seriesOne?1:0))throw Error('PACK_CONTENTS');if(input.seriesOne){if(s.codes[0].registration!=='ready')throw Error('REGISTRATION');const revealed=await call('reveal',{codeId:s.codes[0].id,key:'setup-reveal-'+s.codes[0].id});if(!/^(C0[123])?[A-Z2-9]{15}$/.test(revealed.code))throw Error('CODE_PATTERN');}await call('logout',{});if((await call('session')).signedIn)throw Error('LOGOUT');console.log('Setup smoke passed: native login, selected debit, safe retry, profile contents and logout.');
 """
     compose(
         directory,
@@ -637,7 +683,7 @@ const opened=await call('open',{packId:pack.id,key:'setup-open-'+pack.id});if(op
         "--input-type=module",
         "-e",
         script,
-        data=json.dumps(account),
+        data=json.dumps({**account, "seriesOne": meta.get("seriesOneEnabled", False)}),
     )
     print(
         "Setup smoke passed. Native-client Cash Shop redemption is a separate gameplay check."
@@ -927,7 +973,27 @@ def upgrade(directory, meta):
     if pending != "0":
         raise RuntimeError("Finish pending purchases before upgrading.")
     previous = json.loads((directory / "compose.json").read_text(encoding="utf-8"))
-    new_meta = {**meta, "bridgeHash": bridge_snapshot(directory)}
+    settings = dict(
+        line.split("=", 1)
+        for line in (directory / "private/cards.env")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line and not line.startswith("#")
+    )
+    catalog = json.loads(
+        (directory / "private/catalog.json").read_text(encoding="utf-8")
+    )
+    rewards = settings.get(
+        "ENABLE_SERIES_ONE_REWARDS",
+        "1" if any(v.get("codes") for v in catalog["variants"]) else "0",
+    )
+    if rewards not in ["0", "1"]:
+        raise RuntimeError("Invalid Series One provider configuration.")
+    new_meta = {
+        **meta,
+        "bridgeHash": bridge_snapshot(directory),
+        "seriesOneEnabled": rewards == "1",
+    }
     run(
         [
             sys.executable,
@@ -953,6 +1019,15 @@ def upgrade(directory, meta):
         raise
     private_file(directory / "compose.json", json.dumps(previous, indent=2) + "\n")
     safety = backup(directory, meta, restart=False)
+    if "ENABLE_SERIES_ONE_REWARDS" not in settings:
+        path = directory / "private/cards.env"
+        private_file(
+            path,
+            path.read_text(encoding="utf-8").rstrip()
+            + "\nENABLE_SERIES_ONE_REWARDS="
+            + rewards
+            + "\n",
+        )
     private_file(directory / "compose.json", json.dumps(candidate, indent=2) + "\n")
     private_file(directory / "installation.json", json.dumps(new_meta, indent=2) + "\n")
     try:
@@ -999,6 +1074,11 @@ def main():
         "--test-account",
         action="store_true",
         help="Create and fund a disposable CardTest account and exercise a real pack",
+    )
+    setup.add_argument(
+        "--series-one",
+        action="store_true",
+        help="Enable the Series One provider and add one code insert per pack",
     )
     for name in ["start", "doctor", "stop", "backup", "upgrade", "smoke"]:
         commands.add_parser(name)

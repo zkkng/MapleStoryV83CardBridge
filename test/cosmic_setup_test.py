@@ -16,6 +16,19 @@ spec.loader.exec_module(setup)
 
 
 class SetupSafety(unittest.TestCase):
+    def test_reward_profile_is_explicit_and_inserts_one_code_per_pack(self):
+        plain = setup.managed_catalog()
+        self.assertFalse(any(v.get("codes") for v in plain["variants"]))
+        reward = setup.managed_catalog(True)
+        for product in reward["products"]:
+            self.assertEqual(sum(s["count"] for s in product["slots"]), 9)
+            inserts = [s for s in product["slots"] if s.get("role") == "insert"]
+            self.assertEqual(len(inserts), 1)
+            self.assertEqual(inserts[0]["count"], 1)
+        self.assertFalse(
+            any(v.get("codes") for v in setup.managed_catalog()["variants"])
+        )
+
     def test_seed_account_is_disabled_before_login_and_patch_is_repeatable(self):
         with tempfile.TemporaryDirectory() as directory:
             game = Path(directory)

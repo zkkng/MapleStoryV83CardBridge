@@ -9,7 +9,7 @@ import { Library, operator } from "../src/library.mjs";
 import { generateSeriesOneCode } from "../src/series-one.mjs";
 import { fail } from "../src/protocol.mjs";
 export const catalog = JSON.parse(
-  readFileSync(new URL("../data/catalog.example.json", import.meta.url)),
+  readFileSync(new URL("./reward-catalog.json", import.meta.url)),
 );
 export function fixture({
   store = new MemoryStore(),
@@ -29,16 +29,17 @@ export function fixture({
   });
   if (!store.read((s) => s.catalog))
     core.publishCatalog(operator, inputCatalog);
-  core.configureCodePool(operator, {
-    key: "pool-test",
-    pool: {
-      id: "v83.series-one",
-      providerId: "maplestory.v83",
-      name: "Series One",
-      generator: "series-one",
-      normalization: "upper-trim",
-    },
-  });
+  if (inputCatalog.variants.some((v) => v.codes?.length))
+    core.configureCodePool(operator, {
+      key: "pool-test",
+      pool: {
+        id: "v83.series-one",
+        providerId: "maplestory.v83",
+        name: "Series One",
+        generator: "series-one",
+        normalization: "upper-trim",
+      },
+    });
   const payments = new Map(),
     registrations = new Map(),
     balances = new Map([

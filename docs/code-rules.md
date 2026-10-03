@@ -1,13 +1,15 @@
 # Series One code rules
 
-Pack One issues one code when the pack is purchased, in the same framework transaction as the sealed cards. Opening, animation, reload and reveal do not reroll it.
+Rewards are disabled by default. The Shapes catalog has no code insert and no reward pool is configured. The following rules apply only when an operator explicitly enables the supplied Series One campaign and adds a matching code insert to a custom catalog.
 
-| Family | Layout | Rewards |
-| --- | --- | --- |
-| Standard | 15 characters, displayed as 5–5–5 | Fourteen material/consumable outcomes |
-| Pet | C01 + 15 characters | Black Bunny, 30 days |
-| Pet | C02 + 15 characters | Blue Husky, 30 days |
-| Pet | C03 + 15 characters | Porcupine, 30 days |
+An opted-in reward pack issues one code when the pack is purchased, in the same framework transaction as the sealed cards. Opening, animation, reload and reveal do not reroll it.
+
+| Family   | Layout                                | Rewards                               |
+| -------- | ------------------------------------- | ------------------------------------- |
+| Standard | 15 characters, displayed as 5â€“5â€“5 | Fourteen material/consumable outcomes |
+| Pet      | C01 + 15 characters                   | Black Bunny, 30 days                  |
+| Pet      | C02 + 15 characters                   | Blue Husky, 30 days                   |
+| Pet      | C03 + 15 characters                   | Porcupine, 30 days                    |
 
 The bridge accepts spaces and hyphens for display grouping and normalizes case. Generation uses cryptographically secure random draws and an alphabet excluding ambiguous I, O, 0 and 1. This alphabet is an implementation choice, not a recovered official code-generation algorithm. Codes are valid only on the configured private server.
 

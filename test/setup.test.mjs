@@ -43,6 +43,8 @@ test("setup creates independent persistent keys and refuses either pre-existing 
         return [l.slice(0, i), l.slice(i + 1)];
       }),
   );
+  assert.equal(node.ENABLE_SERIES_ONE_REWARDS, "0");
+  assert.equal(node.CATALOG_PATH, "./data/catalog.example.json");
   const game = readFileSync(join(directory, "game.env"), "utf8");
   assert(game.includes("CARD_BRIDGE_SHARED_KEY=" + node.GAME_SHARED_KEY));
   const keys = [
