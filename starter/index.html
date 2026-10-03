@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Cosmic Card Library</title>
+    <link rel="stylesheet" href="/library/style.css" />
+    <script type="module" src="/library/app.mjs"></script>
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">MAPLESTORY · V83</p>
+      <h1>Cosmic Card Library</h1>
+      <p>
+        Collect cards, open packs, and take a little gift into your adventure.
+      </p>
+    </header>
+    <main>
+      <section id="account">
+        <h2>Your game account</h2>
+        <form id="login">
+          <label
+            >Account name
+            <input
+              name="username"
+              autocomplete="username"
+              minlength="3"
+              maxlength="13"
+              required /></label
+          ><label
+            >Password
+            <input
+              type="password"
+              name="password"
+              autocomplete="current-password"
+              maxlength="128"
+              required /></label
+          ><button>Sign in</button>
+        </form>
+        <div id="signed-in" hidden>
+          <p id="welcome"></p>
+          <button id="refresh">Refresh collection and code status</button
+          ><button id="logout">Sign out</button>
+        </div>
+      </section>
+      <p id="status" role="status" aria-live="polite"></p>
+      <section>
+        <h2>Choose a pack</h2>
+        <p>
+          Choose which game balance pays. Each accepted balance has the same
+          numeric pack price.
+        </p>
+        <div id="wallet"></div>
+        <form id="buy">
+          <label
+            >Pack
+            <select id="product"></select></label
+          ><label
+            >Pay with
+            <select id="cash-type"></select></label
+          ><label
+            >Quantity
+            <input
+              id="quantity"
+              type="number"
+              value="1"
+              min="1"
+              max="5" /></label
+          ><button id="purchase">Buy pack</button>
+        </form>
+      </section>
+      <section>
+        <h2>Your packs</h2>
+        <div id="packs"></div>
+        <div id="opened" aria-live="polite"></div>
+      </section>
+      <section>
+        <h2>Your collection</h2>
+        <div id="collection"></div>
+      </section>
+      <section>
+        <h2>Your code cards</h2>
+        <p>
+          Open a pack before revealing its code. Redeem it in the v83 Cash Shop
+          on the same game account. USED means the game saved your reward.
+        </p>
+        <div id="codes"></div>
+      </section>
+    </main>
+    <footer>
+      This starter uses the reusable card framework and Cosmic adapter. It
+      includes no game artwork.
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "series": 1,
+  "distribution": "uniform",
+  "historicalSources": [
+    "https://maplestoryitcg.weebly.com/codes.html",
+    "https://ccggamez.com/files/mpls/maplestory_itcg_rules.pdf"
+  ],
+  "rewards": [
+    {
+      "id": "antellion-relic",
+      "itemId": 4031757,
+      "quantity": 1,
+      "name": "Antellion Relic",
+      "weight": 1
+    },
+    {
+      "id": "black-versal-materia",
+      "itemId": 4031754,
+      "quantity": 1,
+      "name": "Black Versal Materia",
+      "weight": 1
+    },
+    {
+      "id": "blinking-dingbat",
+      "itemId": 4031752,
+      "quantity": 1,
+      "name": "Blinking Dingbat",
+      "weight": 1
+    },
+    {
+      "id": "dark-matter",
+      "itemId": 4031750,
+      "quantity": 1,
+      "name": "Dark Matter",
+      "weight": 1
+    },
+    {
+      "id": "gelt-chocolate",
+      "itemId": 2022121,
+      "quantity": 2,
+      "name": "Gelt Chocolate",
+      "weight": 1
+    },
+    {
+      "id": "ginger-ale",
+      "itemId": 2002023,
+      "quantity": 10,
+      "name": "Ginger Ale",
+      "weight": 1
+    },
+    {
+      "id": "mystic-astrolabe",
+      "itemId": 4031756,
+      "quantity": 1,
+      "name": "Mystic Astrolabe",
+      "weight": 1
+    },
+    {
+      "id": "naricain-jewel",
+      "itemId": 4031758,
+      "quantity": 1,
+      "name": "Naricain Jewel",
+      "weight": 1
+    },
+    {
+      "id": "power-elixir",
+      "itemId": 2000005,
+      "quantity": 10,
+      "name": "Power Elixir",
+      "weight": 1
+    },
+    {
+      "id": "subani-ankh",
+      "itemId": 4031759,
+      "quantity": 1,
+      "name": "Subani Ankh",
+      "weight": 1
+    },
+    {
+      "id": "taru-totem",
+      "itemId": 4031755,
+      "quantity": 1,
+      "name": "Taru Totem",
+      "weight": 1
+    },
+    {
+      "id": "vorticular-gyro",
+      "itemId": 4031751,
+      "quantity": 1,
+      "name": "Vorticular Gyro",
+      "weight": 1
+    },
+    {
+      "id": "white-versal-materia",
+      "itemId": 4031760,
+      "quantity": 1,
+      "name": "White Versal Materia",
+      "weight": 1
+    },
+    {
+      "id": "zeta-residue",
+      "itemId": 4031753,
+      "quantity": 1,
+      "name": "Zeta Residue",
+      "weight": 1
+    },
+    {
+      "id": "black-bunny",
+      "itemId": 5000034,
+      "quantity": 1,
+      "name": "Black Bunny",
+      "prefix": "C01",
+      "petDays": 30,
+      "weight": 1
+    },
+    {
+      "id": "blue-husky",
+      "itemId": 5000037,
+      "quantity": 1,
+      "name": "Blue Husky",
+      "prefix": "C02",
+      "petDays": 30,
+      "weight": 1
+    },
+    {
+      "id": "porcupine",
+      "itemId": 5000039,
+      "quantity": 1,
+      "name": "Porcupine",
+      "prefix": "C03",
+      "petDays": 30,
+      "weight": 1
+    }
+  ]
+}

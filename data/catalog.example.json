@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "name": "MapleStory card example",
+  "features": {
+    "cardTrading": false,
+    "currencyTrading": false,
+    "inventoryBrowsing": false,
+    "tradeUps": false,
+    "publicAlbums": false
+  },
+  "currencies": [
+    {
+      "id": "nx",
+      "name": "NX credit",
+      "value": {
+        "numerator": 1,
+        "denominator": 1
+      },
+      "tradable": false
+    }
+  ],
+  "rarities": [
+    {
+      "id": "common",
+      "name": "Common",
+      "rank": 0
+    },
+    {
+      "id": "uncommon",
+      "name": "Uncommon",
+      "rank": 1
+    },
+    {
+      "id": "rare",
+      "name": "Rare",
+      "rank": 2
+    },
+    {
+      "id": "epic",
+      "name": "Epic",
+      "rank": 3
+    },
+    {
+      "id": "legendary",
+      "name": "Legendary",
+      "rank": 4
+    }
+  ],
+  "lines": [
+    {
+      "id": "first-light",
+      "name": "First Light"
+    }
+  ],
+  "cards": [
+    {
+      "id": "slime",
+      "lineId": "first-light",
+      "name": "Green Slime"
+    },
+    {
+      "id": "mushroom",
+      "lineId": "first-light",
+      "name": "Orange Mushroom"
+    },
+    {
+      "id": "snail",
+      "lineId": "first-light",
+      "name": "Snail"
+    },
+    {
+      "id": "grendel",
+      "lineId": "first-light",
+      "name": "Grendel the Really Old"
+    },
+    {
+      "id": "ellinia",
+      "lineId": "first-light",
+      "name": "Ellinia"
+    },
+    {
+      "id": "series-one-code",
+      "lineId": "first-light",
+      "name": "Series One code card",
+      "type": "code",
+      "behavior": {
+        "tradable": false,
+        "albumEligible": true
+      }
+    }
+  ],
+  "variants": [
+    {
+      "id": "slime.standard",
+      "cardId": "slime",
+      "rarityId": "common"
+    },
+    {
+      "id": "mushroom.standard",
+      "cardId": "mushroom",
+      "rarityId": "uncommon"
+    },
+    {
+      "id": "snail.standard",
+      "cardId": "snail",
+      "rarityId": "rare"
+    },
+    {
+      "id": "grendel.standard",
+      "cardId": "grendel",
+      "rarityId": "epic"
+    },
+    {
+      "id": "ellinia.standard",
+      "cardId": "ellinia",
+      "rarityId": "legendary"
+    },
+    {
+      "id": "series-one-code.standard",
+      "cardId": "series-one-code",
+      "rarityId": "common",
+      "codes": [
+        {
+          "id": "game",
+          "poolId": "v83.series-one",
+          "reveal": "peel",
+          "transfer": "block",
+          "title": "Series One reward"
+        }
+      ]
+    }
+  ],
+  "products": [
+    {
+      "id": "first-light",
+      "lineId": "first-light",
+      "name": "First Light",
+      "revision": 1,
+      "maxQuantity": 5,
+      "price": {
+        "currencyId": "nx",
+        "amount": 1000
+      },
+      "slots": [
+        {
+          "id": "collectibles",
+          "count": 8,
+          "pool": [
+            {
+              "variantId": "slime.standard",
+              "weight": 6200
+            },
+            {
+              "variantId": "mushroom.standard",
+              "weight": 2500
+            },
+            {
+              "variantId": "snail.standard",
+              "weight": 1000
+            },
+            {
+              "variantId": "grendel.standard",
+              "weight": 250
+            },
+            {
+              "variantId": "ellinia.standard",
+              "weight": 50
+            }
+          ]
+        },
+        {
+          "id": "code",
+          "role": "insert",
+          "count": 1,
+          "pool": [
+            {
+              "variantId": "series-one-code.standard",
+              "weight": 1
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

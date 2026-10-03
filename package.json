@@ -1,0 +1,20 @@
+{
+  "name": "@digital-card/maplestory-v83-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24.14.0"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:browser": "node test/starter-browser.mjs"
+  },
+  "dependencies": {
+    "@digital-card/framework": "https://github.com/zkkng/MapleStoryV83CardBridge/releases/download/framework-runtime-0.2.0-grendel.1/digital-card-framework-0.2.0-grendel.1.tgz"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  },
+  "license": "AGPL-3.0-only"
+}

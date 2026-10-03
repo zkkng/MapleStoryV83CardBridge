@@ -1,0 +1,11 @@
+{
+  "name": "@digital-card/framework",
+  "version": "0.2.0",
+  "edition": "generated-code-1",
+  "sourceCommit": "7423262fedeb3116dff2dd178761e54704ba3169",
+  "license": "MIT",
+  "url": "https://github.com/zkkng/MapleStoryV83CardBridge/releases/download/framework-runtime-0.2.0-grendel.1/digital-card-framework-0.2.0-grendel.1.tgz",
+  "sha256": "dddc7327ece733d846bdc91481e27c55f976b6b0b668111db1e0531b9455430f",
+  "integrity": "sha512-aXhNovxwotGQJaZWkdDXpqjb3VWr31VZblCu4kAX627D1UjJLVwcfGPKUYXNZJuV5ZYUXovXQDOo4GtOtLyKaA==",
+  "bytes": 692680
+}

@@ -1,0 +1,149 @@
+:root {
+  color-scheme: dark;
+  font:
+    16px/1.6 system-ui,
+    sans-serif;
+  background: #102320;
+  color: #ebecdb;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+header,
+main,
+footer {
+  max-width: 950px;
+  margin: auto;
+  padding: 30px 25px;
+}
+header {
+  padding-bottom: 5px;
+}
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: #bca46d;
+}
+h1,
+h2 {
+  font-family: Georgia, serif;
+  font-weight: 400;
+}
+section {
+  padding: 18px 0 28px;
+  border-bottom: 1px solid #52664b;
+}
+button,
+input,
+select {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+  padding: 8px 18px;
+  background: #c4b47e;
+  color: #142a21;
+  border: 0;
+  border-radius: 4px;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+input,
+select {
+  padding: 8px;
+  background: #173730;
+  color: #fff;
+  border: 1px solid #6c7c65;
+  border-radius: 4px;
+}
+form {
+  display: flex;
+  gap: 18px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+label {
+  display: grid;
+  gap: 5px;
+}
+label input {
+  max-width: 230px;
+}
+#quantity {
+  width: 100px;
+}
+#status {
+  min-height: 40px;
+  color: #eed496;
+}
+#wallet {
+  display: flex;
+  gap: 18px;
+  margin-bottom: 20px;
+}
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+  gap: 13px;
+}
+.card,
+.code {
+  padding: 16px;
+  background: #18372e;
+  border: 1px solid #79936a;
+  border-radius: 5px;
+}
+.card small {
+  display: block;
+  color: #acbb98;
+}
+.code {
+  margin: 10px 0;
+}
+.code-text {
+  font:
+    19px Consolas,
+    monospace;
+  word-break: break-all;
+  user-select: all;
+  padding: 15px;
+  background: #0d211b;
+}
+.pack {
+  margin: 8px;
+}
+.balance {
+  color: #bfcea7;
+}
+.used {
+  color: #aed4a4;
+}
+footer {
+  font-size: 13px;
+  color: #abb7a1;
+}
+a {
+  color: #d7bd81;
+}
+:focus-visible {
+  outline: 3px solid #e9cb7e;
+  outline-offset: 4px;
+}
+@media (max-width: 600px) {
+  #wallet {
+    flex-direction: column;
+    gap: 3px;
+  }
+  form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  label input {
+    max-width: 100%;
+  }
+}
