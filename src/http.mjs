@@ -146,7 +146,12 @@ export function createLibraryHttp({
     try {
       const url = new URL(req.url, "http://local"),
         path = url.pathname;
-      if (req.method === "POST" && path === "/api/library/provider/used") {
+      if (
+        req.method === "POST" &&
+        ["/api/library/provider/used", "/api/library/provider/health"].includes(
+          path,
+        )
+      ) {
         const raw = await body(req);
         if (
           !verifyRequest({
@@ -162,6 +167,10 @@ export function createLibraryHttp({
         const value = JSON.parse(raw);
         if (!value || Array.isArray(value) || typeof value !== "object")
           fail("INVALID_REQUEST", "Submit a JSON object.");
+        if (path.endsWith("/health")) {
+          response(res, 200, { ok: true, protocol: "v83-card-bridge/1" });
+          return;
+        }
         library.used(value);
         response(res, 200, { ok: true });
         return;
@@ -182,7 +191,30 @@ export function createLibraryHttp({
           return;
         }
         if (req.method === "GET" && route === "health") {
-          response(res, 200, { ok: true });
+          const ready = await game("/health", {});
+          if (
+            !ready ||
+            ready.protocol !== "v83-card-bridge/1" ||
+            ready.ok !== true ||
+            ready.callbackReady !== true ||
+            ready.sessionSource !== authMode ||
+            !Array.isArray(ready.acceptedCashTypes) ||
+            JSON.stringify([...ready.acceptedCashTypes].sort()) !==
+              JSON.stringify([...library.acceptedCashTypes].sort())
+          )
+            fail(
+              "CONFIGURATION_MISMATCH",
+              "The game and card service configuration do not agree.",
+              503,
+            );
+          response(res, 200, {
+            ok: true,
+            gameReady: true,
+            callbackReady: true,
+            authMode,
+            acceptedCashTypes: library.acceptedCashTypes,
+            catalogVersion: library.core.catalog().version,
+          });
           return;
         }
         if (route === "session" && req.method === "GET") {

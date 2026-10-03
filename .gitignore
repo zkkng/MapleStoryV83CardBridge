@@ -4,3 +4,4 @@ node_modules/
 state/
 *.sqlite*
 *.log
+__pycache__/

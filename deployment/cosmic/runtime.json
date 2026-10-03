@@ -1,0 +1,11 @@
+{
+  "cosmicRepository": "https://github.com/P0nk/Cosmic.git",
+  "cosmicRevision": "fec53bc7714dc0f1ae3f50b2986cdf2727e0912a",
+  "images": {
+    "maven": "maven:3.9.9-eclipse-temurin-21",
+    "java": "eclipse-temurin:21-jre-jammy",
+    "node": "node:24.19.0-bookworm-slim",
+    "database": "mysql:8.4",
+    "web": "nginx:1.28-alpine"
+  }
+}

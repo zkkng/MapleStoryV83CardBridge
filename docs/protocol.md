@@ -14,6 +14,7 @@ Sign the UTF-8 string `method + "\n" + path + "\n" + time + "\n" + nonce + "\n" 
 
 | Endpoint | Input | Result |
 | --- | --- | --- |
+| /health | empty object | ok, protocol, sessionSource, acceptedCashTypes, callbackReady; requires the writer lease and a signed callback probe |
 | /login | username, password, tokenHash | accountId, canonical name; native starter mode only |
 | /logout | tokenHash | ok; revoke the native session |
 | /session | tokenHash | verified accountId and name |
@@ -27,6 +28,8 @@ The debit order ID is a persistent 64-character hash. Cash types are 1=NX Credit
 Code registration is idempotent by issuanceId and immutable after acceptance. The game validates the Series One item/quantity/pet family, binds the account, and stores only an HMAC code index. Do not log registration bodies or raw credentials.
 
 The game posts `{issuanceId,receiptId,occurredAt}` to `/api/library/provider/used` using the same signature protocol. It writes the outbox in the item-save transaction and marks delivery only after a 2xx acknowledgement. The framework deduplicates receipt IDs persistently. Polling uses the same game receipt and cannot create a conflicting result.
+
+The game probes POST `/api/library/provider/health` with a signed empty JSON object. It returns `{ok:true,protocol:"v83-card-bridge/1"}` without changing issued codes or outbox records. This is distinct from anonymous GET `/api/library/health`, which checks the complete game/callback connection and configuration agreement.
 
 ## Browser API
 

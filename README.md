@@ -6,43 +6,27 @@ The bridge includes a standalone account-and-pack website. You can also build a 
 
 ## Requirements
 
-- Node.js 24.14 or newer, Java 21, Python 3, and a working Cosmic MySQL installation.
-- Cosmic revision `fec53bc7714dc0f1ae3f50b2986cdf2727e0912a`. See [compatibility](docs/compatibility.md).
-- One bridge service and one enabled game process writing the same installation.
-- Existing game accounts and operator-controlled cash balances.
+- Linux, or WSL2 with Docker integration; Python 3.11+, Git, and a running Docker Engine with Compose.
+- Internet access for the pinned Cosmic checkout, Maven dependencies and container images.
+- A v83 game client for gameplay. Client files and game artwork are supplied separately.
 
-## Start from Cosmic
+## Complete Cosmic setup
 
-1. Install Cosmic using its [upstream instructions](https://github.com/P0nk/Cosmic#readme), check out the supported revision, and confirm that your v83 client can log in.
-2. Clone this repository beside the game checkout. Install its pinned framework dependency with `npm ci`.
-3. Validate and install the game hooks:
+From this repository, run:
 
-   ```sh
-   python tools/install-cosmic.py ../Cosmic --check
-   python tools/install-cosmic.py ../Cosmic
-   cd ../Cosmic
-   ./mvnw test package
-   ```
+```sh
+python3 tools/cosmic.py --directory ../CosmicCardServer install --test-account
+```
 
-   On Windows use `mvnw.cmd`. The installer validates every source anchor before writing and is safe to repeat. Keep your game changes in version control. The hook locations are described in [installation](docs/install.md).
+The script clones the supported Cosmic revision, installs and tests the adapter, builds the game and card service, initializes MySQL, creates persistent encrypted storage and private keys, starts the game and default website, and verifies authenticated communication in both directions. Java, Node.js and MySQL run in containers; you do not install them separately.
 
-4. From this bridge directory, generate private configuration:
+Open `http://127.0.0.1:8490/library/`. The optional disposable `CardTest` account is funded and purchases one real pack during setup; its credentials are saved privately in the managed installation. Setup preserves its keys and purchase identities when resuming an interrupted run. Cosmic's upstream demonstration administrator is disabled before login opens.
 
-   ```sh
-   node tools/setup.mjs --origin http://127.0.0.1:8487
-   ```
+Start, stop, readiness checks, account provisioning, funding, backup, restore, and upgrades are scripted too. See [the complete setup guide](docs/cosmic-setup.md) for commands, remote access, an existing source checkout, and recovery.
 
-   This creates `.env` and `game.env` with independent random keys. It refuses to overwrite existing files. Load `game.env` into the Cosmic process environment, then restart your rebuilt game. Keep these files private.
+For an already operated Cosmic deployment, the [adapter installation guide](docs/install.md) describes the bounded source hooks and manual service configuration. The managed profile creates its own database; it does not replace an existing game's database or service.
 
-5. Start the bridge:
-
-   ```sh
-   node --env-file=.env src/server.mjs
-   ```
-
-6. Open `http://127.0.0.1:8487/library/`. Sign in with your existing game account, choose one cash balance, buy a pack, and open it. Reveal its code, then enter it in the v83 Cash Shop on the same account. Leave a free reward inventory slot. Refresh the code ledger after redemption.
-
-A fresh account starts with the game's configured balances. Fund a disposable local test account through your normal operator process when checking purchases; the bridge does not grant free cash. The service binds to loopback. Use a TLS reverse proxy for remote players; see [deployment and recovery](docs/operations.md).
+Players sign in with their game account, choose one cash balance, buy a pack and open it. Reveal the code, enter it in the v83 Cash Shop on the same account, and leave a free reward inventory slot. Refresh the code ledger after redemption. Automated setup checks registration and reveal; native-client redemption remains a separate gameplay qualification.
 
 ## Pack One
 

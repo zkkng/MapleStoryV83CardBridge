@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { fixture } from "./fixture.mjs";
 import { createLibraryHttp } from "../src/http.mjs";
-import { fail, hash } from "../src/protocol.mjs";
+import { fail, hash, mac } from "../src/protocol.mjs";
 
 async function httpFixture(t) {
   const x = fixture(),
@@ -64,11 +64,57 @@ async function httpFixture(t) {
     post,
     headers,
     base,
+    secret,
     get attempts() {
       return attempts;
     },
   };
 }
+test("readiness requires the game, matching account mode and a verified callback", async (t) => {
+  const h = await httpFixture(t);
+  const ready = await fetch(h.base + "/api/library/health");
+  assert.equal(ready.status, 200);
+  assert.equal((await ready.json()).callbackReady, true);
+  h.x.faults.health = true;
+  assert.equal((await fetch(h.base + "/api/library/health")).status, 503);
+  h.x.faults.health = false;
+  h.x.faults.sessionSource = "grove";
+  assert.equal((await fetch(h.base + "/api/library/health")).status, 503);
+});
+test("callback probes require the exact signed body and do not change code state", async (t) => {
+  const h = await httpFixture(t),
+    path = "/api/library/provider/health",
+    body = "{}",
+    time = String(Date.now()),
+    nonce = "1".repeat(32);
+  assert.equal(
+    (await fetch(h.base + path, { method: "POST", body })).status,
+    403,
+  );
+  const signature = mac(
+    h.secret,
+    ["POST", path, time, nonce, hash(body)].join("\n"),
+  );
+  const headers = {
+    "X-Bridge-Time": time,
+    "X-Bridge-Nonce": nonce,
+    "X-Bridge-Signature": signature,
+  };
+  const response = await fetch(h.base + path, {
+    method: "POST",
+    body,
+    headers,
+  });
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    protocol: "v83-card-bridge/1",
+  });
+  assert.equal(
+    (await fetch(h.base + path, { method: "POST", body, headers })).status,
+    403,
+  );
+  assert.equal(h.x.registrations.size, 0);
+});
 test("native login verifies CSRF and credentials, stores only a token hash, and logout revokes ownership", async (t) => {
   const h = await httpFixture(t),
     account = { username: "Collector", password: "fixture" };

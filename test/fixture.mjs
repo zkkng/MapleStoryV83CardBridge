@@ -61,6 +61,17 @@ export function fixture({
   const faults = { lostDebit: false, registration: false };
   let debitCount = 0;
   const game = async (path, value) => {
+    if (path === "/health") {
+      if (faults.health)
+        fail("GAME_UNAVAILABLE", "Fixture game is unavailable", 503);
+      return {
+        ok: true,
+        protocol: "v83-card-bridge/1",
+        callbackReady: true,
+        sessionSource: faults.sessionSource ?? "bridge",
+        acceptedCashTypes,
+      };
+    }
     if (path === "/session") {
       if (value.tokenHash !== "valid")
         fail("UNAUTHENTICATED", "Invalid session", 401);

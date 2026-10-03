@@ -2,6 +2,8 @@
 
 Run the bridge as an unprivileged service with Node.js 24.14+, private state files, TLS at the public proxy, and an enabled Cosmic adapter on a private loopback connection. Example nginx and systemd files are in `deploy/`; adapt host names and paths before use.
 
+The [managed Cosmic setup](cosmic-setup.md) automates these services, readiness checks, consistent backups, restoration and upgrades. The guidance below also applies to manually operated installations.
+
 ## State and secrets
 
 `STATE_DIRECTORY` holds encrypted framework SQLite state and a separate purchase journal. The journal contains durable account/order/receipt metadata, not raw codes. Protect it as account data. The game database contains the independent debit receipts, HMAC code indices, inventory, sessions and notification outbox.
@@ -41,7 +43,7 @@ USED notification delivery retries until acknowledged. The library also polls re
 
 ## Availability and limits
 
-`/api/library/health` is a liveness check, not proof that the game or rewards are available. A game outage may leave the public catalog browsable while authenticated purchases report unavailable. Request errors omit internal exception details and plaintext code material.
+`/api/library/health` is a readiness check. It requires a signed game response, a signed callback probe, matching authentication modes and accepted cash types. An unavailable game or callback, or mismatched configuration, returns failure. A game outage may leave the public catalog browsable while authenticated purchases report unavailable. Request errors omit internal exception details and plaintext code material. Run `node --env-file=.env tools/doctor.mjs` for a manual-service check, or the managed `doctor` command.
 
 The framework defaults to 50,000 code records, 200,000 code retry/confirmation records and a bounded whole-state SQLite payload. Card copies and history also consume that payload. Those counts are limits, not a promise that every catalog can fill them. Monitor state size and pending orders before growing the installation. One Node writer and one enabled game process are the supported model.
 

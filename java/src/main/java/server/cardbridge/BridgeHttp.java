@@ -179,6 +179,7 @@ public final class BridgeHttp {
       JsonObject value = JsonParser.parseString(body).getAsJsonObject();
       result =
           switch (path) {
+            case "/health" -> health();
             case "/session" -> BridgeSessions.session(text(value, "tokenHash", 64));
             case "/login" ->
                 BridgeSessions.login(
@@ -229,6 +230,62 @@ public final class BridgeHttp {
     } finally {
       exchange.close();
     }
+  }
+
+  private static Map<String, Object> health() throws Exception {
+    String target = System.getenv("CARD_BRIDGE_CALLBACK_URL");
+    if (target == null || !target.endsWith("/api/library/provider/used"))
+      throw new Problem(503, "CALLBACK_UNAVAILABLE", "Configure the provider callback URL.");
+    URI uri = URI.create(target.substring(0, target.length() - 4) + "health");
+    if (!Set.of("http", "https").contains(uri.getScheme())
+        || uri.getUserInfo() != null
+        || uri.getRawQuery() != null
+        || ("http".equals(uri.getScheme())
+            && !Set.of("127.0.0.1", "localhost", "[::1]", "::1").contains(uri.getHost())))
+      throw new Problem(503, "CALLBACK_UNAVAILABLE", "Use a loopback or HTTPS provider callback.");
+    String body = "{}",
+        time = Long.toString(System.currentTimeMillis()),
+        nonce = UUID.randomUUID().toString().replace("-", "");
+    HttpRequest request =
+        HttpRequest.newBuilder(uri)
+            .timeout(Duration.ofSeconds(5))
+            .header("Content-Type", "application/json")
+            .header("X-Bridge-Time", time)
+            .header("X-Bridge-Nonce", nonce)
+            .header(
+                "X-Bridge-Signature",
+                BridgeCrypto.signature(
+                    env("CARD_BRIDGE_SHARED_KEY"), "POST", uri.getRawPath(), time, nonce, body))
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+    try {
+      HttpResponse<String> response =
+          HttpClient.newBuilder()
+              .connectTimeout(Duration.ofSeconds(3))
+              .followRedirects(HttpClient.Redirect.NEVER)
+              .build()
+              .send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200 || response.body().length() > 1024)
+        throw new IllegalStateException();
+      JsonObject data = JsonParser.parseString(response.body()).getAsJsonObject();
+      if (!data.get("ok").getAsBoolean()
+          || !"v83-card-bridge/1".equals(data.get("protocol").getAsString()))
+        throw new IllegalStateException();
+    } catch (Exception error) {
+      throw new Problem(
+          503, "CALLBACK_UNAVAILABLE", "The authenticated provider callback is unavailable.");
+    }
+    return Map.of(
+        "ok",
+        true,
+        "protocol",
+        "v83-card-bridge/1",
+        "sessionSource",
+        System.getenv().getOrDefault("CARD_BRIDGE_SESSION_SOURCE", "bridge"),
+        "acceptedCashTypes",
+        BridgeWallet.acceptedTypes(),
+        "callbackReady",
+        true);
   }
 
   private static void deliver() {

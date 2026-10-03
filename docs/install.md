@@ -1,6 +1,8 @@
 # Install the Cosmic adapter
 
-Applies to bridge 0.1 and the Cosmic revision in [compatibility](compatibility.md). First make a normal Cosmic installation work with your v83 client. This adapter extends that installation; it does not supply the client or replace game setup.
+Applies to bridge 0.1 and the Cosmic revision in [compatibility](compatibility.md). For a complete new deployment, use [scripted Cosmic setup](cosmic-setup.md). This guide covers installing the adapter into an existing operated server. First confirm that normal Cosmic login works with your v83 client; the bridge does not supply a client.
+
+Manual service installation requires Node.js 24.14+, Java 21, Python 3 and the existing Cosmic MySQL database.
 
 ## Hooks
 
