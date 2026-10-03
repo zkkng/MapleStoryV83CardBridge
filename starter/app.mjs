@@ -591,6 +591,7 @@ $("login").onsubmit = async (e) => {
       password: $("login").elements.password.value,
     });
     if (version !== generation) return;
+    clearPrivateViews();
     session = result;
     await refresh();
     if (version === generation) message("Welcome. Your library is ready.");

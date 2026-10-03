@@ -137,6 +137,7 @@ async function scenario(rewards) {
       document.querySelector("#welcome").textContent.includes("Collector"),
     );
     assert.equal(await page.locator("#header-wallet .balance").count(), 3);
+    assert.equal(await page.locator('#collection-view').inputValue(),'owned');
     assert.ok(
       (await page.locator("#checkout-balance").textContent()).includes(
         "10,000",
