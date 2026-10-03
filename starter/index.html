@@ -3,33 +3,67 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Cosmic Card Library</title>
+    <meta
+      name="description"
+      content="Open digital card packs and build your MapleStory collection using your game account."
+    />
+    <title>MapleStory Card Library</title>
     <link rel="stylesheet" href="/library/style.css" />
     <script type="module" src="/library/app.mjs"></script>
   </head>
   <body>
-    <header>
-      <p class="eyebrow">MAPLESTORY · V83</p>
-      <h1>Cosmic Card Library</h1>
-      <p>
-        Collect cards, open packs, and take a little gift into your adventure.
-      </p>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="topbar">
+      <a class="brand" href="/library/"
+        ><span class="brand-mark" aria-hidden="true">C</span
+        ><span>Card Library<small>MAPLESTORY</small></span></a
+      >
+      <div id="signed-in" hidden>
+        <span id="welcome"></span
+        ><button id="refresh" class="quiet">Refresh</button
+        ><button id="logout" class="quiet">Sign out</button>
+      </div>
+      <button id="signin-link" class="quiet">Sign in</button>
     </header>
-    <main>
-      <section id="account">
-        <h2>Your game account</h2>
+    <main id="main">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">A little collection. A new adventure.</p>
+          <h1>Your next favorite card<br />is waiting in a pack.</h1>
+          <p>
+            Open packs, discover cards, and build a collection that stays with
+            your game account.
+          </p>
+          <a class="button" href="#shop">Explore packs →</a>
+        </div>
+        <div class="hero-cards" aria-hidden="true">
+          <div class="paper-card back">COLLECT</div>
+          <div class="paper-card front">
+            <span>SHAPES</span>
+            <div class="card-symbol">✦</div>
+            <strong>Something worth keeping.</strong
+            ><small>Eight cards. One new discovery.</small>
+          </div>
+        </div>
+      </section>
+      <section id="account" class="panel">
+        <div>
+          <h2>Use your game account</h2>
+          <p>
+            No separate card account needed. Sign in with the account you use on
+            this server.
+          </p>
+        </div>
         <form id="login">
           <label
-            >Account name
-            <input
+            >Account name<input
               name="username"
               autocomplete="username"
               minlength="3"
               maxlength="13"
               required /></label
           ><label
-            >Password
-            <input
+            >Password<input
               type="password"
               name="password"
               autocomplete="current-password"
@@ -37,59 +71,198 @@
               required /></label
           ><button>Sign in</button>
         </form>
-        <div id="signed-in" hidden>
-          <p id="welcome"></p>
-          <button id="refresh">Refresh collection and code status</button
-          ><button id="logout">Sign out</button>
+      </section>
+      <p id="status" role="status" aria-live="polite" aria-atomic="true">
+        Loading your library…
+      </p>
+      <nav class="navigation" aria-label="Library sections">
+        <a href="#shop">Pack shop</a
+        ><a href="#pack-section"
+          >Unopened packs <span id="pack-count">0</span></a
+        ><a href="#collection-section"
+          >Collection <span id="card-count">0</span></a
+        ><a href="#code-section">Reward codes</a>
+      </nav>
+      <section id="shop">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">START SOMETHING GOOD</p>
+            <h2>Pack shop</h2>
+          </div>
+          <p>Choose a pack. Make it yours.</p>
+        </div>
+        <div id="wallet" class="wallet"></div>
+        <div class="shop-layout">
+          <div id="products" class="product-grid"></div>
+          <form id="buy" class="panel checkout">
+            <h3>Your purchase</h3>
+            <label>Pack<select id="product"></select></label
+            ><label>Pay with<select id="cash-type"></select></label
+            ><label
+              >Number of packs<input
+                id="quantity"
+                type="number"
+                value="1"
+                min="1"
+                max="5"
+                required
+            /></label>
+            <p id="total" class="total"></p>
+            <p id="purchase-note" class="muted"></p>
+            <button id="purchase" disabled>Buy pack</button
+            ><small
+              >Only your selected balance is charged. Purchases are saved before
+              you open your packs.</small
+            >
+          </form>
+        </div>
+        <div id="pending" hidden class="notice">
+          <strong>A purchase is being completed.</strong>
+          <p>
+            Your original purchase is saved. Check its status before making
+            another purchase.
+          </p>
+          <button id="retry">Check purchase</button>
         </div>
       </section>
-      <p id="status" role="status" aria-live="polite"></p>
-      <section>
-        <h2>Choose a pack</h2>
-        <p>
-          Choose which game balance pays. Each accepted balance has the same
-          numeric pack price.
-        </p>
-        <div id="wallet"></div>
-        <form id="buy">
-          <label
-            >Pack
-            <select id="product"></select></label
-          ><label
-            >Pay with
-            <select id="cash-type"></select></label
-          ><label
-            >Quantity
-            <input
-              id="quantity"
-              type="number"
-              value="1"
-              min="1"
-              max="5" /></label
-          ><button id="purchase">Buy pack</button>
-        </form>
-      </section>
-      <section>
-        <h2>Your packs</h2>
-        <div id="packs"></div>
+      <section id="pack-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">READY WHEN YOU ARE</p>
+            <h2>Unopened packs</h2>
+          </div>
+        </div>
+        <div id="packs" class="pack-grid"></div>
         <div id="opened" aria-live="polite"></div>
       </section>
-      <section>
-        <h2>Your collection</h2>
+      <section id="collection-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">EVERY CARD HAS A PLACE</p>
+            <h2>Your collection</h2>
+          </div>
+          <p id="collection-summary"></p>
+        </div>
+        <div class="filters">
+          <label
+            >Find a card<input
+              id="search"
+              type="search"
+              placeholder="Search card names"
+              maxlength="120" /></label
+          ><label
+            >Set<select id="line-filter">
+              <option value="">All sets</option>
+            </select></label
+          ><label
+            >Rarity<select id="rarity-filter">
+              <option value="">All rarities</option>
+            </select></label
+          ><label
+            >Sort by<select id="sort">
+              <option value="name">Name</option>
+              <option value="rarity">Rarity</option>
+              <option value="quantity">Copies owned</option>
+            </select></label
+          >
+        </div>
         <div id="collection"></div>
+        <button id="more-cards" class="quiet" hidden>Show more cards</button>
       </section>
-      <section>
-        <h2>Your code cards</h2>
+      <section id="code-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">A GIFT FOR YOUR ADVENTURE</p>
+            <h2>Reward codes</h2>
+          </div>
+          <label
+            >Show<select id="code-filter">
+              <option value="all">All codes</option>
+              <option value="ready">Available</option>
+              <option value="redeemed">Used</option>
+            </select></label
+          >
+        </div>
         <p>
-          Open a pack before revealing its code. Redeem it in the v83 Cash Shop
-          on the same game account. USED means the game saved your reward.
+          When a pack includes a reward code, open it here, then redeem the code
+          in the in-game Cash Shop on the same account. Your server decides
+          which rewards are available.
         </p>
         <div id="codes"></div>
+        <button id="more-codes" class="quiet" hidden>Load more codes</button>
+      </section>
+      <section class="help panel">
+        <h2>A few things to know</h2>
+        <div class="help-grid">
+          <div>
+            <h3>Cards stay in your collection</h3>
+            <p>
+              Once opened, a pack becomes cards. Duplicate cards are counted
+              together, so your collection stays easy to browse.
+            </p>
+          </div>
+          <div>
+            <h3>Rewards depend on your server</h3>
+            <p>
+              Collecting works without rewards. If enabled, codes belong to your
+              account and are marked used after the game confirms redemption.
+            </p>
+          </div>
+          <div>
+            <h3>Need a hand?</h3>
+            <p>
+              Use Refresh if balances or code status look out of date. If a
+              purchase is interrupted, check the saved purchase instead of
+              buying again. Contact your server team if it remains pending.
+            </p>
+          </div>
+        </div>
       </section>
     </main>
     <footer>
-      This starter uses the reusable card framework and Cosmic adapter. It
-      includes no game artwork.
+      <span>Made for collecting.</span
+      ><span
+        >Powered by
+        <a
+          href="https://github.com/zkkng/DigitalCardFramework"
+          target="_blank"
+          rel="noopener noreferrer"
+          >DigitalCardFramework</a
+        >
+        ·
+        <a
+          href="https://github.com/P0nk/Cosmic"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Cosmic v83</a
+        ></span
+      >
     </footer>
+    <dialog id="confirm">
+      <form method="dialog">
+        <button
+          class="dialog-close quiet"
+          aria-label="Close purchase confirmation"
+        >
+          ×
+        </button>
+      </form>
+      <p class="eyebrow">ONE LAST LOOK</p>
+      <h2>Ready to add a pack?</h2>
+      <p id="confirm-text"></p>
+      <p>Your pack contents are random. Duplicates are possible.</p>
+      <div class="actions">
+        <button id="confirm-buy">Confirm purchase</button
+        ><button id="cancel-buy" class="quiet">Cancel</button>
+      </div>
+    </dialog>
+    <dialog id="detail">
+      <form method="dialog">
+        <button class="dialog-close quiet" aria-label="Close card details">
+          ×
+        </button>
+      </form>
+      <div id="detail-content"></div>
+    </dialog>
   </body>
 </html>

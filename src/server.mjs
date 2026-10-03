@@ -33,13 +33,18 @@ const vault = createCodeVault({
   keys: { v1: key32("CODE_ENCRYPTION_KEY") },
   indexKey: key32("CODE_INDEX_KEY"),
 });
+const rewardsEnabled = process.env.ENABLE_SERIES_ONE_REWARDS === "1";
 const core = new CardFramework({
   store,
   codeVault: vault,
-  codeGenerators: { "series-one": generateSeriesOneCode },
+  codeGenerators: rewardsEnabled ? { "series-one": generateSeriesOneCode } : {},
 });
 const journal = new Journal(join(state, "bridge.sqlite")),
   catalog = JSON.parse(readFileSync(env("CATALOG_PATH"), "utf8"));
+if (!rewardsEnabled && catalog.variants.some((v) => v.codes?.length))
+  throw Error(
+    "This catalog includes codes. Configure a reward provider explicitly before enabling it.",
+  );
 const current = store.read((s) => s.catalog?.version ?? 0);
 if (
   current === catalog.version &&
@@ -51,18 +56,19 @@ if (current !== catalog.version) {
     throw Error("Finish pending purchases before changing catalog versions");
   core.publishCatalog(operator, catalog);
 }
-core.configureCodePool(operator, {
-  key: "series-one-pool-v1",
-  pool: {
-    id: "v83.series-one",
-    providerId: "maplestory.v83",
-    name: "Series One code",
-    normalization: "upper-trim",
-    generator: "series-one",
-    instructions:
-      "Enter this code in the v83 Cash Shop using the same game account. Each code grants one randomly assigned Series One reward.",
-  },
-});
+if (rewardsEnabled)
+  core.configureCodePool(operator, {
+    key: "series-one-pool-v1",
+    pool: {
+      id: "v83.series-one",
+      providerId: "maplestory.v83",
+      name: "Series One code",
+      normalization: "upper-trim",
+      generator: "series-one",
+      instructions:
+        "Enter this code in the v83 Cash Shop using the same game account. Each code grants one randomly assigned Series One reward.",
+    },
+  });
 const secret = env("GAME_SHARED_KEY"),
   game = createGameClient({ url: env("GAME_URL"), secret });
 const library = new Library({

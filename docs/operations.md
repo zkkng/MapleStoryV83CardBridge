@@ -50,3 +50,18 @@ Behind nginx, enable `TRUST_PROXY=1` only when the proxy replaces `X-Real-IP`. T
 ## Upgrade
 
 Stop the bridge, reconcile any outstanding reward saves, and stop the game. Back up state and keys. Run the new installer's `--check`, inspect the game diff, install, rebuild, test and restart with the same persistent keys. Then start the bridge and verify an existing code history and an unopened pack. Preserve the game cash hooks whenever website debits are enabled.
+
+## Rollout checklist
+
+The included site is a small collecting website for the pinned vanilla Cosmic baseline. Qualify the actual deployment before inviting players:
+
+1. Install into a clean copy of the supported Cosmic revision; run installer checks and the full game test suite.
+2. Use a disposable real game account to sign in from the website. Verify each accepted balance independently and confirm that an insufficient selected balance never spends another balance.
+3. Buy the default Shapes pack. Confirm eight collectible cards, no reward code, and no item delivery. Reload and restart both services; balances, unopened packs and the collection must persist.
+4. Interrupt a purchase response after payment and recover the saved purchase. Confirm exactly one debit and one allocation. Complete pending orders before changing the catalog.
+5. If rewards are enabled intentionally, redeem a configured code through a real v83 client's Cash Shop. Verify account restrictions, inventory capacity, USED status, and replay rejection after a restart.
+6. Serve the site behind TLS with the configured exact public origin. Verify secure cookies, sign-out, throttling and proxy headers. Keep the bridge/game private endpoints on loopback or a protected internal network.
+7. Back up both services' persistent data and encryption keys together. Restore into a separate installation and verify ownership and pending-order recovery before relying on the backup.
+8. Test the site on a phone and with keyboard navigation. Review imported catalogs and source receipts if using external scans. Keep the previous catalog and database backup available for a controlled rollback.
+
+No fixture or CI result replaces a successful real-client and MySQL qualification. Roll out first to a small group after these checks pass, and monitor failed payments, stuck registrations and recovery errors.

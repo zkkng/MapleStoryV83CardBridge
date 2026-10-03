@@ -1,17 +1,34 @@
 # MapleStory v83 Card Bridge
 
-Connect [DigitalCardFramework](https://github.com/zkkng/DigitalCardFramework) to a Cosmic GMS v83 server. Players choose NX Credit, Maple Points, or NX Prepaid, buy and open packs, collect cards, and redeem newly generated Series One code cards in the native Cash Shop. The game reports USED only after the reward inventory and receipt commit together.
+Bring an iTCG-style collecting experience to your private MapleStory server. Players sign in with their game accounts, buy digital card packs, open them, and keep the cards in their collection. Server owners can choose what collecting means for their community: a collection to complete, a reason to earn points, or a way to distribute in-game rewards.
 
-The bridge includes a standalone account-and-pack website. You can also build a custom frontend through the public bridge protocol. Neither the Grove website nor game artwork is required for the starter.
+This bridge connects [DigitalCardFramework](https://github.com/zkkng/DigitalCardFramework) to MapleStory. It includes a basic installation script and a simple card website, so you can start with a vanilla [Cosmic GMS v83](https://github.com/P0nk/Cosmic) deployment without building your own frontend. The framework can be connected to other MapleStory servers in principle; the supplied server hooks and installer specifically target Cosmic. Other server codebases need their own adapter and verification.
+
+Players can pay with NX Credit, Maple Points, or NX Prepaid by default. You can adapt the server-side wallet to vote points or another currency, and customize pack contents and prices through the framework. Alternate currencies require adapter code; changing a website label does not change how the server charges a player.
+
+When you configure rewards, packs can include a private-server code that players redeem in the in-game Cash Shop. **The default installation has no reward pool and issues no item codes.** It ships with an original Shapes pack so you can learn, collect, and test purchases without game artwork or reward items. The optional iTCG importer creates separate packs from external scan galleries; it does not add rewards.
+
+The included website works independently. No Grendel website, custom account portal, or bundled game assets are required.
+
+## What players can do
+
+- Sign in with an existing Cosmic account and view the accepted game balances.
+- Browse packs, inspect their contents and per-draw probabilities, select a balance, and confirm the total before paying.
+- Open unopened packs. Opened packs become collection cards; there is no pack-history view.
+- Search and filter cards by set and rarity, sort them, inspect details, and see duplicate counts.
+- Reveal and copy any enabled reward codes, check their status, and load older codes.
+- Recover an interrupted purchase using its original saved request without paying twice.
+
+The layout works on desktop and mobile, uses system fonts and original CSS decoration, and includes keyboard navigation, labeled controls, live status messages, and reduced-motion support. Trading and public collections are outside this barebones website.
 
 ## Requirements
 
 - Node.js 24.14 or newer, Java 21, Python 3, and a working Cosmic MySQL installation.
 - Cosmic revision `fec53bc7714dc0f1ae3f50b2986cdf2727e0912a`. See [compatibility](docs/compatibility.md).
 - One bridge service and one enabled game process writing the same installation.
-- Existing game accounts and operator-controlled cash balances.
+- Existing game accounts and operator-controlled game balances.
 
-## Start from Cosmic
+## Start from vanilla Cosmic
 
 1. Install Cosmic using its [upstream instructions](https://github.com/P0nk/Cosmic#readme), check out the supported revision, and confirm that your v83 client can log in.
 2. Clone this repository beside the game checkout. Install its pinned framework dependency with `npm ci`.
@@ -21,10 +38,10 @@ The bridge includes a standalone account-and-pack website. You can also build a 
    python tools/install-cosmic.py ../Cosmic --check
    python tools/install-cosmic.py ../Cosmic
    cd ../Cosmic
-   ./mvnw test package
+   bash ./mvnw test package
    ```
 
-   On Windows use `mvnw.cmd`. The installer validates every source anchor before writing and is safe to repeat. Keep your game changes in version control. The hook locations are described in [installation](docs/install.md).
+   On Windows use `mvnw.cmd`. The installer validates every source anchor before writing and is safe to repeat. Keep your game changes in version control. See [installation](docs/install.md).
 
 4. From this bridge directory, generate private configuration:
 
@@ -40,28 +57,39 @@ The bridge includes a standalone account-and-pack website. You can also build a 
    node --env-file=.env src/server.mjs
    ```
 
-6. Open `http://127.0.0.1:8487/library/`. Sign in with your existing game account, choose one cash balance, buy a pack, and open it. Reveal its code, then enter it in the v83 Cash Shop on the same account. Leave a free reward inventory slot. Refresh the code ledger after redemption.
+6. Open `http://127.0.0.1:8487/library/`. Sign in with an existing game account, choose a balance, and buy a Shapes pack. Check the purchase total, open the pack, and find its eight cards in your collection. No code or item reward is generated.
 
-A fresh account starts with the game's configured balances. Fund a disposable local test account through your normal operator process when checking purchases; the bridge does not grant free cash. The service binds to loopback. Use a TLS reverse proxy for remote players; see [deployment and recovery](docs/operations.md).
+A fresh account starts with the game's configured balances. Fund a disposable test account through your normal operator process; the bridge does not grant cash. The service binds to loopback. For remote players, use the TLS reverse proxy and service configuration in [deployment and recovery](docs/operations.md).
 
-## Pack One
+## Add the real iTCG sets, optionally
 
-The example catalog draws eight collectible cards and one guaranteed code insert per pack. Each collectible draws independently, with duplicates allowed. Rarity weights are Common 62%, Uncommon 25%, Rare 10%, Epic 2.5%, and Legendary 0.5%. The code reward independently chooses one of 17 Series One outcomes uniformly.
+The [optional importer](docs/itcg-import.md) downloads scans from the MapleStory Card Game Guide into your own external asset directory and builds one pack for each selected English set. Artwork is not included in this repository. The five source galleries are Set 1, OMG Bosses!, P3ts, NPC Heroes, and Behold Zakum.
 
-Standard codes contain fifteen characters. Pet codes add C01, C02, or C03, for eighteen total; the three pets have 30 days of life. Material and consumable quantities are in [the reward table](data/series-one.json). These are newly issued private-server codes, using an unambiguous random alphabet. They do not redeem at official MapleStory services. The separate digital insert and uniform reward distribution are choices of this edition. See [code rules](docs/code-rules.md).
+```sh
+python tools/import-itcg.py --inspect
+python tools/import-itcg.py --output external/itcg --sets 1,2,3,4,5 --catalog-version 3
+```
 
-## Customize your installation
+Review the generated catalog, then set `CATALOG_PATH=./external/itcg/catalog.json` and `ASSET_ROOT=./external/itcg/assets` in your private configuration. Restart after finishing pending purchases. The importer does not change the live configuration, replace existing files, or set up a reward pool. It creates eight-card packs with equal per-card weights, not a simulation of historical booster collation.
 
-Change `CATALOG_PATH` to a framework catalog you own. Packs, collectible rarities, contents and prices are catalog data. Keep the generated insert's pool ID `v83.series-one` for this Series One provider. Increase the catalog version when content changes, and the product revision when pack terms change. Finish pending purchases before publishing new versions.
+## Customize packs and payment
 
-Set `ACCEPTED_CASH_TYPES` and `CARD_BRIDGE_ACCEPTED_CASH_TYPES` to the same subset of `1,2,4`. The starter enables all three at equal numeric prices. Debits never combine or fall back to another balance. Series One reward validation is enforced by the game adapter; adding other reward campaigns requires a separately reviewed provider/whitelist.
+Change `CATALOG_PATH` to a framework catalog you own. Cards, sets, rarities, pack contents and prices are catalog data. Increase the catalog version when content changes and the product revision when pack terms change. Finish pending purchases before switching versions.
 
-For an existing Grove account website, use `AUTH_MODE=grove`, `CARD_BRIDGE_SESSION_SOURCE=grove`, and `SESSION_COOKIE=qg_account`. Default `bridge` authentication uses its own hashed session table and requires no portal tables. Other websites implement the trusted session resolver contract in [the protocol](docs/protocol.md).
+Set `ACCEPTED_CASH_TYPES` and `CARD_BRIDGE_ACCEPTED_CASH_TYPES` to the same subset of `1,2,4`. The default enables all three at equal numeric prices. Debits never combine balances or fall back to another balance.
 
-## Verification
+To use vote points or another currency, implement its authoritative wallet balance, debit, durable payment receipt, and retry behavior in the server adapter and bridge settlement mapping. See [the protocol](docs/protocol.md). Keep player funds and account ownership on the server. The generic framework supports catalog currencies; this premade Cosmic wallet implements the three native cash balances.
 
-`npm test` checks generation, encrypted persistence, purchase recovery, ownership, cash selection, callbacks and browser-request boundaries. Install the browser with `npx playwright install chromium`, then run `npm run test:browser` for the standalone account, purchase, reveal, USED, replay and sign-out flow. After installation, `./mvnw test` also runs the game adapter's SQL and inventory contract tests in an isolated JVM.
+## Configure reward codes, explicitly
 
-See [compatibility](docs/compatibility.md) for the exact baseline and verification limits. Tests use isolated fixtures; they do not replace an operator's real client redemption and restart check.
+The default `ENABLE_SERIES_ONE_REWARDS=0` leaves the generated reward pool unconfigured. Keep it disabled for collectible-only packs. If you deliberately choose the supplied Series One reward campaign, read [code rules](docs/code-rules.md), build your own catalog with a `v83.series-one` code insert, and set `ENABLE_SERIES_ONE_REWARDS=1`. Do not enable it merely to import card scans.
 
-Source is AGPL-3.0-only. Game assets, databases, keys and operational files are not included.
+Custom rewards require a matching game-side whitelist and provider; the supplied Series One adapter does not accept arbitrary items. Codes are account-bound and valid only on your private server. The game reports USED after the reward inventory and receipt commit together.
+
+## Verify before rollout
+
+Run `npm test`, `python -m unittest discover -s test -p '*_test.py'`, and `npm run test:browser` after installing Chromium with `npx playwright install chromium`. Browser checks cover default collectible packs and a separate reward-enabled fixture. The installed Cosmic checkout also runs the adapter's SQL and inventory contract tests with `bash ./mvnw test`.
+
+Before inviting players, follow the [rollout checklist](docs/operations.md#rollout-checklist): test your actual v83 client, MySQL database, login, payment, restart recovery, backups and TLS. Fixture tests do not establish those deployment results. See [compatibility](docs/compatibility.md) for the verified baseline and limits.
+
+Source is AGPL-3.0-only. Imported images retain their original rights and are not covered by this source license. Game databases, keys and operational files are not included.

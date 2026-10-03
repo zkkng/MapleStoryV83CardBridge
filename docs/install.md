@@ -4,13 +4,13 @@ Applies to bridge 0.1 and the Cosmic revision in [compatibility](compatibility.m
 
 ## Hooks
 
-| File | Change |
-| --- | --- |
-| CouponCodeHandler | Check bridge codes inside the existing client lock; unknown codes continue through the existing coupon handler. |
-| Character.saveCharToDB | Run `beforeSave` immediately before the inventory transaction commits, and `afterSave` only after commit. |
-| CashShop | Read and mutate all three cash balances from the authoritative account row while enabled; avoid saving stale cached balances. Cash inventory still saves normally. |
-| Server startup | Start the signed loopback adapter after game initialization and before the login listener. |
-| Maven | Add Gson 2.13.2 and test-only H2 2.3.232. Run the adapter tests in their own JVM, preserving the game's one-time WZ initialization. |
+| File                   | Change                                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CouponCodeHandler      | Check bridge codes inside the existing client lock; unknown codes continue through the existing coupon handler.                                                    |
+| Character.saveCharToDB | Run `beforeSave` immediately before the inventory transaction commits, and `afterSave` only after commit.                                                          |
+| CashShop               | Read and mutate all three cash balances from the authoritative account row while enabled; avoid saving stale cached balances. Cash inventory still saves normally. |
+| Server startup         | Start the signed loopback adapter after game initialization and before the login listener.                                                                         |
+| Maven                  | Add Gson 2.13.2 and test-only H2 2.3.232. Run the adapter tests in their own JVM, preserving the game's one-time WZ initialization.                                |
 
 `tools/install-cosmic.py SERVER --check` validates without writing. The regular invocation validates all anchors first, writes the hooks, and copies `java/src` into the game checkout. It rejects conflicting dependency versions and unknown source layouts. Repeating it does not duplicate hooks or dependencies.
 
@@ -41,6 +41,6 @@ Grove mode delegates sign-in to the existing account website and validates its s
 
 ## Check the installation
 
-Run the complete game tests, then start the rebuilt game with the adapter enabled. Confirm startup can hold the MySQL writer lease; a second enabled game process must fail rather than become another reward writer. Start the bridge and complete the [starter workflow](../README.md). Check each accepted cash type separately, test an insufficient selected balance, then retry the same code after redemption: it must grant no second item.
+Run the complete game tests, then start the rebuilt game with the adapter enabled. Confirm startup can hold the MySQL writer lease; a second enabled game process must fail rather than become another reward writer. Start the bridge and complete the [starter workflow](../README.md). Check each accepted cash type separately and test an insufficient selected balance. The default Shapes pack must produce collectible cards and no reward codes. If you explicitly enable a reward campaign, also retry the same code after redemption: it must grant no second item.
 
 Disable the adapter only after reconciling purchases and reward claims. Stop the bridge first, and restart the game when changing `CARD_BRIDGE_ENABLED`. Do not switch back to cached cash writes while an enabled bridge can still debit accounts.

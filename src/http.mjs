@@ -11,6 +11,8 @@ const types = {
   ".mjs": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
   ".webp": "image/webp",
   ".svg": "image/svg+xml",
   ".mp3": "audio/mpeg",
@@ -129,7 +131,7 @@ export function createLibraryHttp({
     res.writeHead(200, {
       "Content-Type": types[extname(file)],
       "Cache-Control":
-        extname(file) === ".html" || extname(file) === ".json"
+        [".html", ".json", ".css", ".js", ".mjs"].includes(extname(file))
           ? "no-cache"
           : "public, max-age=86400",
     });
@@ -171,7 +173,14 @@ export function createLibraryHttp({
         if (url.search) fail("INVALID_REQUEST", "Unexpected query parameters.");
         const route = path.slice("/api/library/".length);
         if (req.method === "GET" && route === "rewards") {
-          response(res, 200, seriesOne);
+          response(res, 200, {
+            ...seriesOne,
+            rewards: library.core
+              .catalog()
+              .variants.some((v) => v.codes?.length)
+              ? seriesOne.rewards
+              : [],
+          });
           return;
         }
         if (req.method === "GET" && route === "catalog") {

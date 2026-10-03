@@ -13,6 +13,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - run: python -m unittest discover -s test -p '*_test.py'
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
   cosmic:

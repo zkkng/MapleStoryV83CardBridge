@@ -12,7 +12,7 @@ The framework runtime archive and integrity are pinned in package.json and the l
 - Independent spending from all three cash balances, changed-type replay rejection and insufficient selected funds.
 - Native account-session creation, lookup, revocation and password compatibility.
 - Node bridge purchase, encrypted restart, generated code and signed HTTP contract tests.
-- The standalone and Grendel frontends are separate from the game source; fixture browser tests exercise their API wiring.
+- The standalone collecting website is independent of custom server websites. Browser fixtures cover Shapes packs without rewards, a separate reward-enabled catalog, mobile layout, purchase confirmation, and session isolation.
 
 The adapter was also installed and compiled against a Cosmic-derived downstream checkout. This does not establish compatibility with every HeavenMS/OdinMS fork.
 
@@ -20,6 +20,6 @@ The adapter was also installed and compiled against a Cosmic-derived downstream 
 
 SQL tests use H2 in MySQL compatibility mode and mocked packet/character boundaries. They verify adapter transitions but do not prove real client rendering, MySQL lock behavior under your deployment, or every character-save extension in a fork.
 
-Before enabling player purchases, complete the starter workflow with a disposable real account and v83 client: all accepted balances, ordinary and pet rewards, full inventory rejection, repeat redemption, game restart, bridge restart and a temporarily unavailable callback. Confirm that your saved item and USED receipt agree. Keep your installed code revision and configuration together when diagnosing an issue.
+Before enabling player purchases, complete the starter workflow with a disposable real account and v83 client: all accepted balances, the reward-free Shapes pack, game restart, bridge restart and purchase recovery. If enabling rewards, also check ordinary and pet rewards, full inventory rejection, repeat redemption and a temporarily unavailable callback. Confirm that each saved item and USED receipt agree. Keep your installed code revision and configuration together when diagnosing an issue.
 
 The process model is one bridge writer and one enabled Cosmic process per installation. Distributed game writers are outside this profile. The framework uses an encrypted whole-state SQLite store with bounded capacity; it is not a distributed transaction service. Do not run two bridge services against the same state files.
