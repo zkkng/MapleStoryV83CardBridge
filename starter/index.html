@@ -38,21 +38,21 @@
         <div>
           <p class="eyebrow">A little collection. A new adventure.</p>
           <h1 id="hero-title">
-            Your next favorite card<br />is waiting in a pack.
+            A home for your<br />card collection.
           </h1>
-          <p>
-            Open packs, discover cards, and build a collection that stays with
-            your game account.
+          <p id="hero-description">
+            Browse the sets, find a pack you like, and start collecting.
+            Your MapleStory account keeps everything together.
           </p>
-          <a class="button" href="#shop">Explore packs →</a>
+          <div class="actions"><a class="button" href="#shop">Browse packs →</a><a class="button quiet" href="#collection-section">Preview the cards</a></div>
         </div>
         <div class="hero-cards" aria-hidden="true">
           <div class="paper-card back">COLLECT</div>
           <div class="paper-card front">
             <span>SHAPES</span>
             <div class="card-symbol">✦</div>
-            <strong>Something worth keeping.</strong
-            ><small>Eight cards. One new discovery.</small>
+            <strong>A little discovery.</strong
+            ><small>Collect. Open. Keep.</small>
           </div>
         </div>
       </section>
@@ -86,7 +86,7 @@
         Loading your library…
       </p>
       <nav class="navigation" aria-label="Library sections">
-        <a href="#shop">Pack shop</a
+        <a href="#shop" aria-current="location">Pack shop</a
         ><a href="#pack-section"
           >Unopened packs <span id="pack-count">0</span></a
         ><a href="#collection-section"
@@ -109,13 +109,13 @@
             <p class="eyebrow">START SOMETHING GOOD</p>
             <h2>Pack shop</h2>
           </div>
-          <p>Choose a pack. Make it yours.</p>
+          <p>Review the contents before you buy.</p>
         </div>
         <div id="wallet" class="wallet"></div>
         <div class="shop-layout">
           <div id="products" class="product-grid"></div>
           <form id="buy" class="panel checkout">
-            <h3>Your purchase</h3>
+            <p class="eyebrow">YOUR NEXT PACK</p><h3>Your purchase</h3>
             <label>Pack<select id="product"></select></label
             ><label>Pay with<select id="cash-type"></select></label
             ><label
@@ -157,7 +157,7 @@
         <button id="more-packs" class="quiet" hidden>
           Load more unopened packs
         </button>
-        <div id="opened" aria-live="polite"></div>
+        <div id="opened" tabindex="-1" aria-live="polite" aria-label="New cards from your pack"></div>
       </section>
       <section id="collection-section">
         <div class="section-heading">
@@ -244,10 +244,10 @@
             </p>
           </div>
           <div>
-            <h3>Rewards depend on your server</h3>
+            <h3>Collecting comes first</h3>
             <p>
-              Collecting works without rewards. If enabled, codes belong to your
-              account and are marked used after the game confirms redemption.
+              Packs contain collectible cards by default. Your server can choose
+              to add reward codes; any included rewards are shown before you buy.
             </p>
           </div>
           <div>
@@ -262,7 +262,7 @@
       </section>
     </main>
     <footer>
-      <span>Made for collecting.</span
+      <span>Card Library · MapleStory v83</span
       ><span
         >Powered by
         <a

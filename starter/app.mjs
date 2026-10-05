@@ -178,10 +178,10 @@ function imageFallbacks(root) {
     if (img.complete && !img.naturalWidth) fail();
   });
 }
-function cardMarkup(card, copies = 0, interactive = true) {
+function cardMarkup(card, copies = 0, interactive = true, isNew = false) {
   const tag = interactive ? "button" : "article";
   const missing = card.preview && copies === 0;
-  return `<${tag} class="card rarity-${esc(card.rarityId)}${missing ? " missing" : ""}" ${interactive ? `data-card="${esc(card.id)}"` : ""}><div class="card-art">${art(card)}</div><strong>${esc(card.definition.name)}</strong><small>${esc(rarity(card.rarityId))}${card.definition.type === "code" ? " · Code card" : ""}</small>${copies ? `<span class="copies">×${copies}</span>` : missing ? '<span class="copies">Not owned</span>' : ""}</${tag}>`;
+  return `<${tag} class="card rarity-${esc(card.rarityId)}${missing ? " missing" : ""}" ${interactive ? `data-card="${esc(card.id)}"` : ""}><div class="card-art">${art(card)}</div><strong>${esc(card.definition.name)}</strong><small>${esc(rarity(card.rarityId))}${card.definition.type === "code" ? " · Code card" : ""}</small>${isNew ? '<span class="new-card">New</span>' : ""}${copies ? `<span class="copies">×${copies}</span>` : missing ? '<span class="copies">Not owned</span>' : ""}</${tag}>`;
 }
 function detail(id) {
   const card =
@@ -189,7 +189,7 @@ function detail(id) {
   if (!card) return;
   const owned = ownedCollection().get(card.variantId)?.count ?? 0;
   $("detail-content").innerHTML =
-    `<p class="eyebrow">${esc(setName(card.definition.lineId))}</p><h2>${esc(card.definition.name)}</h2><div class="card-art">${art(card)}</div><dl><dt>Rarity</dt><dd>${esc(rarity(card.rarityId))}</dd><dt>Copies owned</dt><dd>${owned}</dd></dl>${card.definition.metadata?.description ? `<p>${esc(card.definition.metadata.description)}</p>` : ""}`;
+    `<p class="eyebrow">${esc(setName(card.definition.lineId))}</p><h2>${esc(card.definition.name)}</h2><div class="card-art">${art(card)}</div><dl><dt>Rarity</dt><dd>${esc(rarity(card.rarityId))}</dd><dt>Copies owned</dt><dd>${owned}</dd></dl>${card.definition.metadata?.description ? `<p>${esc(card.definition.metadata.description)}</p>` : ""}${typeof card.definition.metadata?.source === "string" && /^https:\/\/maplestoryitcg\.weebly\.com\/uploads\/(?:\d+\/)+[a-zA-Z0-9_.-]+\.(png|jpg|jpeg)$/.test(card.definition.metadata.source) ? `<p class="muted">Scan from <a href="${esc(card.definition.metadata.source)}" target="_blank" rel="noopener noreferrer">the MapleStory Card Game Guide</a>. Artwork remains with its rights holders.</p>` : ""}`;
   imageFallbacks($("detail-content"));
   showDialog("detail");
 }
@@ -286,10 +286,21 @@ function collection() {
             (r) => r.card.definition.lineId === line.id,
           );
           const owned = lineCards.filter((r) => r.count > 0).length;
-          return `<article><div><strong>${esc(line.name)}</strong><span>${owned} / ${lineCards.length}</span></div><progress aria-label="${esc(line.name)} completion" value="${owned}" max="${lineCards.length || 1}"></progress></article>`;
+          return `<button type="button" data-set="${esc(line.id)}" aria-label="Browse ${esc(line.name)}: ${owned} of ${lineCards.length} collected"><span><strong>${esc(line.name)}</strong><span>${owned} / ${lineCards.length}</span></span><progress aria-label="${esc(line.name)} completion" value="${owned}" max="${lineCards.length || 1}"></progress></button>`;
         })
         .join("")
     : "";
+  $("set-progress").querySelectorAll("[data-set]").forEach((button) => {
+    button.onclick = () => {
+      $("line-filter").value = button.dataset.set;
+      $("collection-view").value = "all";
+      $("search").value = "";
+      $("rarity-filter").value = "";
+      collectionLimit = 60;
+      collection();
+      $("search").focus({ preventScroll: true });
+    };
+  });
   $("collection").innerHTML = rows.length
     ? `<div class="card-grid">${rows
         .slice(0, collectionLimit)
@@ -390,6 +401,12 @@ function total() {
     quantity = Number($("quantity").value),
     type = Number($("cash-type").value),
     balance = state?.wallet.balances.find((b) => b.cashType === type);
+  document.querySelectorAll("[data-product]").forEach((choice) => {
+    const selected = choice.dataset.product === product?.id;
+    choice.setAttribute("aria-pressed", String(selected));
+    choice.classList.toggle("quiet", !selected);
+    choice.classList.toggle("selected", selected);
+  });
   $("quantity").max = product?.maxQuantity ?? 1;
   const valid =
     product &&
@@ -407,7 +424,7 @@ function total() {
       : "";
   const pending =
     state?.orders.some(
-      (o) => !["complete", "rejected", "compensated"].includes(o.state),
+      (o) => !["complete", "rejected", "refunded", "compensated"].includes(o.state),
     ) || !!intent();
   $("pending").hidden = !session.signedIn || !pending;
   $("purchase").disabled =
@@ -457,18 +474,30 @@ function constrainedDraws(product, slot) {
     )
   );
 }
+function productMarkup(p) {
+  const variants = new Map(catalog.variants.map((v) => [v.id, v]));
+  const possible = new Set(p.slots.flatMap((s) => s.pool.map((e) => e.variantId))
+    .filter((id) => variants.get(id)?.enabled !== false && variants.get(id)?.remaining !== 0));
+  const rewards = [...possible].some((id) => variants.get(id)?.codes?.length);
+  const totalCards = p.slots.reduce((n, s) => n + s.count, 0);
+  return `<article class="product"><div class="pack-cover" aria-hidden="true"><div class="product-mark">◇<small>CARD PACK</small></div></div><p class="eyebrow">${esc(setName(p.lineId) === p.name ? "COLLECTIBLE PACK" : setName(p.lineId))}</p><h3>${esc(p.name)}</h3><div class="pack-meta"><span>${totalCards} cards</span><span>${rewards ? "Includes reward codes" : "Collectibles only"}</span></div><p>${possible.size} possible variants · Random draws</p><strong class="product-price">${num(p.price.amount)} <small>per pack · selected game balance</small></strong><div class="actions"><button data-product="${esc(p.id)}" ${$("product").value === p.id ? 'aria-pressed="true" class="selected"' : 'aria-pressed="false" class="quiet"'}>Choose this pack</button><button class="quiet" data-contents="${esc(p.id)}">View contents</button></div></article>`;
+}
 function render() {
   if (!catalog) return;
   administration.sync();
   $("hero-title").textContent = session.signedIn
     ? "Your card library"
-    : "Your next favorite card is waiting in a pack.";
+    : "A home for your card collection.";
+  $("hero-description").textContent = session.signedIn
+    ? "Your cards, unopened packs, and game balances, together in one place."
+    : "Browse the sets, find a pack you like, and start collecting. Your MapleStory account keeps everything together.";
   const hasRewards =
     catalog.variants.some((v) => v.codes?.length) || !!state?.codes.length;
   $("code-link").hidden = !hasRewards;
   $("code-section").hidden = !hasRewards;
   document.body.classList.toggle("authenticated", session.signedIn);
   $("account-strip").hidden = !session.signedIn;
+  $("account-strip").classList.toggle("stale", !available);
   $("header-wallet").innerHTML = walletMarkup();
   $("overview").hidden = !session.signedIn;
   const owned = collectionStats();
@@ -511,10 +540,7 @@ function render() {
       );
   $("products").innerHTML = offers.length
     ? offers
-        .map(
-          (p) =>
-            `<article class="product"><div class="product-mark" aria-hidden="true">◇</div><h3>${esc(p.name)}</h3><p>${p.slots.reduce((n, s) => n + s.count, 0)} cards per pack · ${num(p.price.amount)} points</p><small>${esc(setName(p.lineId))} · Random cards, duplicates possible</small><div><button class="quiet" data-product="${esc(p.id)}">Choose this pack</button><button class="quiet" data-contents="${esc(p.id)}">View contents</button></div></article>`,
-        )
+        .map(productMarkup)
         .join("")
     : empty("No packs available", "Check back when your server adds a pack.");
   $("products")
@@ -525,6 +551,13 @@ function render() {
           $("product").value = b.dataset.product;
           $("quantity").value = 1;
           total();
+          document.querySelectorAll("[data-product]").forEach((choice) => {
+            const selected = choice.dataset.product === b.dataset.product;
+            choice.setAttribute("aria-pressed", String(selected));
+            choice.classList.toggle("quiet", !selected);
+            choice.classList.toggle("selected", selected);
+          });
+          $("buy").scrollIntoView({ block: "center" });
           $("product").focus();
         }),
     );
@@ -632,6 +665,19 @@ async function refresh() {
     next = accountResult.value;
     if (!current()) return;
     nextState = next.signedIn ? await api("state") : null;
+    const cursors = new Set();
+    while (nextState?.collection?.next) {
+      if (!current()) return;
+      const cursor = nextState.collection.next;
+      if (cursors.has(cursor)) throw Error("Collection pages changed. Refresh your collection.");
+      cursors.add(cursor);
+      const page = await api("collection?limit=200&after=" + encodeURIComponent(cursor));
+      if (!current()) return;
+      if (!Array.isArray(page.items) || page.items.length > 200)
+        throw Error("Collection pages could not be loaded. Retry connection.");
+      nextState.collection.items.push(...page.items);
+      nextState.collection.next = page.next;
+    }
   } catch (e) {
     if (!current()) return;
     available = false;
@@ -666,18 +712,28 @@ async function refresh() {
 async function openPack(id) {
   if (busy || opening.has(id) || !session.signedIn || !available) return;
   const version = generation;
+  const previous = new Set(ownedCollection().keys());
   opening.add(id);
   render();
   try {
     const result = await api("open", { key: "open-" + id, packId: id });
     if (version !== generation) return;
     $("opened").innerHTML =
-      `<div class="opening"><h3>Your new cards</h3><p>Saved to your collection. They're yours to keep.</p><div class="card-grid">${result.cards.map((c) => cardMarkup(c, 0, false)).join("")}</div><div class="actions"><button id="finish-opening">Done</button><a class="button quiet" href="#collection-section">View collection</a></div></div>`;
+      `<div class="opening"><p class="eyebrow">PACK OPENED</p><h3>Your new cards</h3><p>Saved to your collection. They're yours to keep.</p><div class="card-grid">${result.cards.map((c) => {
+        const isNew = c.definition.type !== "code" && !previous.has(c.variantId);
+        previous.add(c.variantId);
+        return cardMarkup(c, 0, false, isNew);
+      }).join("")}</div><div class="actions"><button id="finish-opening">Done</button><button id="opening-collection" class="quiet">View collection</button></div></div>`;
     imageFallbacks($("opened"));
-    $("finish-opening").onclick = () => {
+    const finish = () => {
       $("opened").replaceChildren();
       $("collection-section").scrollIntoView();
+      $("search").focus({ preventScroll: true });
     };
+    $("finish-opening").onclick = finish;
+    $("opening-collection").onclick = finish;
+    $("opened").scrollIntoView({ block: "start" });
+    $("opened").focus({ preventScroll: true });
     await refresh();
     if (version === generation)
       message("Your cards are saved in your collection.");
@@ -709,21 +765,30 @@ async function purchase(saved) {
     if (version !== generation) return;
     saveIntent(null);
     await refresh();
-    if (version === generation)
+    if (version === generation) {
       message(
         `Purchased ${result.packs.length} pack${result.packs.length === 1 ? "" : "s"}. Ready to open whenever you are.`,
       );
+      $("pack-section").scrollIntoView({ block: "start" });
+      [...$("packs").querySelectorAll("[data-pack]")]
+        .find((button) => result.packs.some((pack) => pack.id === button.dataset.pack))
+        ?.focus({ preventScroll: true });
+    }
   } catch (e) {
     if (version === generation) {
       if (
         [
           "INSUFFICIENT_FUNDS",
           "PURCHASE_REJECTED",
+          "PURCHASE_REFUNDED",
           "STALE_QUOTE",
           "UNSUPPORTED_CASH_TYPE",
         ].includes(e.code)
-      )
+      ) {
         saveIntent(null);
+        await refresh();
+        if (version !== generation) return;
+      }
       message(
         e.message +
           (intent()
@@ -881,6 +946,8 @@ $("clear-filters").onclick = () => {
   $("search").value = "";
   $("line-filter").value = "";
   $("rarity-filter").value = "";
+  $("collection-view").value = session.signedIn ? "owned" : "all";
+  $("sort").value = "name";
   collectionLimit = 60;
   collection();
 };
@@ -989,3 +1056,19 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("focus", backgroundRefresh);
 window.addEventListener("online", backgroundRefresh);
+
+const sectionLinks = [...document.querySelectorAll(".navigation a")];
+const sectionObserver = new IntersectionObserver((entries) => {
+  const visible = entries.filter((entry) => entry.isIntersecting)
+    .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+  if (!visible.length) return;
+  for (const link of sectionLinks) {
+    if (link.hash === "#" + visible[0].target.id)
+      link.setAttribute("aria-current", "location");
+    else link.removeAttribute("aria-current");
+  }
+}, { rootMargin: "-25% 0px -45% 0px" });
+for (const link of sectionLinks) {
+  const section = document.querySelector(link.hash);
+  if (section) sectionObserver.observe(section);
+}

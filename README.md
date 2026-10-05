@@ -32,7 +32,7 @@ Follow the [setup guide](docs/cosmic-setup.md) for configuration and operation, 
 
 ## Make it your own
 
-- **Cards and packs:** create sets, cards, prices and weighted packs through [Administration](docs/administration.md). The website includes pack previews, collection search, filters, duplicate counts and set completion. Opened packs become cards; no opened-pack history is required.
+- **Cards and packs:** create sets, cards, prices and weighted packs through [Administration](docs/administration.md). The [collector website](docs/website.md) includes pack previews, persistent balance display, collection search, filters, duplicate counts and set completion. Opened packs become cards; no opened-pack history is required. The default interface uses original CSS illustrations and system fonts.
 - **Reward codes:** the optional [Series One profile](docs/cosmic-setup.md#install-and-verify) includes a ready-made reward campaign. [Code rules](docs/code-rules.md) explain redemption and the supported rewards; custom rewards need a matching game-side provider.
 - **Original iTCG sets:** the [optional importer](docs/itcg-import.md) creates five set-based packs using externally sourced scans. No artwork is bundled and no rewards are enabled by the import.
 - **Other servers or currencies:** adapt the [server protocol](docs/protocol.md) to your account, payment, and reward systems.

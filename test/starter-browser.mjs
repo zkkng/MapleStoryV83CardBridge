@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { fixture } from "./fixture.mjs";
 import { createLibraryHttp } from "../src/http.mjs";
 import { fail } from "../src/protocol.mjs";
+import { operator } from "../src/library.mjs";
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.BROWSER_CHANNEL
@@ -97,6 +98,11 @@ async function scenario(rewards) {
     assert.ok(
       await page.locator('#collection [data-card^="preview:"]').count(),
     );
+    if (process.env.QA_DIRECTORY && !rewards) {
+      mkdirSync(process.env.QA_DIRECTORY, { recursive: true });
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await page.screenshot({ path: process.env.QA_DIRECTORY + "/starter-guest-desktop.png" });
+    }
     if (!rewards) {
       await page
         .locator(`#collection img[src="${remoteImage}"]`)
@@ -287,6 +293,15 @@ async function scenario(rewards) {
       );
       assert.equal(x.debitCount, 2);
       await page.reload();
+      const savedIntent = await page.evaluate(() => sessionStorage.getItem("cosmic-pack:Collector"));
+      await page.route("**/api/library/buy", (route) => route.fulfill({
+        status: 429, contentType: "application/json",
+        json: { code: "RATE_LIMITED", error: "Please wait before checking your purchase again." },
+      }), { times: 1 });
+      await page.getByRole("button", { name: "Check purchase", exact: true }).click();
+      await page.waitForFunction(() => document.querySelector("#status").textContent.includes("Please wait"));
+      assert.equal(await page.evaluate(() => sessionStorage.getItem("cosmic-pack:Collector")), savedIntent);
+      assert.equal(x.debitCount, 2);
       await page
         .getByRole("button", { name: "Check purchase", exact: true })
         .click();
@@ -422,9 +437,84 @@ async function scenario(rewards) {
     x.close();
   }
 }
+async function largeCollection() {
+  const input = structuredClone(defaultCatalog);
+  input.cards = Array.from({ length: 211 }, (_, n) => ({
+    id: "card-" + n, lineId: input.lines[0].id,
+    name: "Card " + String(n).padStart(3, "0"), metadata: { symbol: "◇" },
+  }));
+  input.variants = input.cards.map((c) => ({ id: c.id + ".standard", cardId: c.id, rarityId: input.rarities[0].id }));
+  input.products[0].slots[0].pool = input.variants.map((v) => ({ variantId: v.id, weight: 1 }));
+  const seedProducts = [0, 100, 200].map((start) => ({
+    ...structuredClone(input.products[0]), id: "pagination-seed-" + start,
+    slots: input.variants.slice(start, start + 100).map((v, n) => ({
+      id: "slot-" + n, count: v === input.variants[210] ? 2 : 1, pool: [{ variantId: v.id, weight: 1 }],
+    })),
+  }));
+  input.products.push(...seedProducts);
+  const x = fixture({ catalog: input }), sessions = new Map();
+  const actor = x.library.actor(x.person);
+  x.core.grantCurrency(operator, { key: "collection-seed-funding", userId: actor.userId,
+    currencyId: "nx", amount: 3000, reason: "Collection pagination fixture" });
+  for (const p of seedProducts) {
+    const result = x.core.purchase(actor, { key: "collection-seed-" + p.id,
+      ...x.core.quote(actor, { productId: p.id, quantity: 1 }) });
+    for (const pack of result.packs) x.core.openPack(actor, { key: "open-" + pack.id, packId: pack.id });
+  }
+  x.core.publishCatalog(operator, { ...input, version: input.version + 1,
+    products: input.products.map((p) => p.id.startsWith("pagination-seed-") ? { ...p, enabled: false, revision: 2 } : p) });
+  const game = async (path, value) => {
+    if (path === "/login") { sessions.set(value.tokenHash, x.person); return x.person; }
+    if (path === "/session") { if (!sessions.has(value.tokenHash)) fail("UNAUTHENTICATED", "Session expired", 401); return x.person; }
+    if (path === "/logout") { sessions.delete(value.tokenHash); return { ok: true }; }
+    return x.game(path, value);
+  };
+  const options = { library: x.library, game, secret: "pagination-shared-".repeat(3), csrfSecret: "pagination-csrf-".repeat(3), authMode: "bridge", webRoot: fileURLToPath(new URL("../starter", import.meta.url)) };
+  const reserve = createLibraryHttp({ ...options, origin: "http://127.0.0.1:8487" });
+  await new Promise((r) => reserve.listen(0, "127.0.0.1", r));
+  const port = reserve.address().port;
+  await new Promise((r) => reserve.close(r));
+  const app = createLibraryHttp({ ...options, origin: "http://127.0.0.1:" + port });
+  await new Promise((r) => app.listen(port, "127.0.0.1", r));
+  const page = await browser.newPage();
+  let release;
+  try {
+    await page.goto("http://127.0.0.1:" + port + "/library/");
+    await page.locator("[name=username]").fill("Collector");
+    await page.locator("[name=password]").fill("fixture");
+    await page.locator("#login button").click();
+    await page.waitForFunction(() => document.querySelector("#collection-summary").textContent.includes("211 unique cards"));
+    await page.locator("#search").fill("Card 210");
+    assert.equal(await page.locator("#collection .card").count(), 1);
+    assert.equal(await page.locator("#collection .copies").textContent(), "×2");
+    await page.locator("[data-set]").click();
+    assert.equal(await page.locator("#collection-view").inputValue(), "all");
+    await page.locator("#clear-filters").click();
+    assert.equal(await page.locator("#collection-view").inputValue(), "owned");
+    assert.equal(await page.locator("#sort").inputValue(), "name");
+    let requested;
+    const held = new Promise((r) => { release = r; }), requestedPage = new Promise((r) => { requested = r; });
+    await page.route("**/api/library/state", async (route) => {
+      const response = await route.fetch(); requested(); await held; await route.fulfill({ response });
+    }, { times: 1 });
+    await page.evaluate(() => { document.activeElement.blur(); window.dispatchEvent(new Event("focus")); });
+    await requestedPage;
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector("#status").textContent === "Signed out.");
+    const response = page.waitForResponse((r) => r.url().endsWith("/state"));
+    release(); await response;
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    assert.equal(await page.locator("#header-wallet .balance").count(), 0);
+    assert.equal(await page.locator("#collection .card:not(.missing)").count(), 0);
+    console.log("Large collection: 211 variants, duplicate counts, set browsing, filter reset and logout during refresh passed.");
+  } finally {
+    release?.(); await page.close(); await new Promise((r) => app.close(r)); x.close();
+  }
+}
 try {
   await scenario(false);
   await scenario(true);
+  await largeCollection();
 } finally {
   await browser.close();
 }
