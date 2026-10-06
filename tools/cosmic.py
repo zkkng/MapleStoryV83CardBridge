@@ -1497,6 +1497,30 @@ def recover_empty(directory, source, expected_project, relocate=False, retry=Fal
     )
 
 
+def recovery_state_probe_script():
+    # Recover SQLite's WAL index only on disposable copies; the source remains read-only.
+    return r"""
+import{copyFileSync,lstatSync,mkdtempSync,rmSync}from'node:fs';
+import{join}from'node:path';import{tmpdir}from'node:os';import{DatabaseSync}from'node:sqlite';
+let temporary,database,code='RECOVERY_COPY_UNAVAILABLE';
+try{
+ const source=process.argv[1]??'/opt/card/state';temporary=mkdtempSync(join(process.argv[2]??tmpdir(),'card-recovery-'));let bytes=0;
+ for(const file of ['framework.sqlite','bridge.sqlite'])for(const suffix of ['','-wal']){
+  const name=file+suffix;let info;try{info=lstatSync(join(source,name))}catch(error){if(suffix&&error.code==='ENOENT')continue;throw error}
+  if(!info.isFile()||(bytes+=info.size)>256*1024*1024)throw Error('INVALID_STATE');copyFileSync(join(source,name),join(temporary,name));
+ }
+ for(const [file,table]of[['framework.sqlite','framework_state'],['bridge.sqlite','orders']]){
+  code=file==='framework.sqlite'?'RECOVERY_FRAMEWORK_UNAVAILABLE':'RECOVERY_BRIDGE_UNAVAILABLE';
+  database=new DatabaseSync(join(temporary,file),{readOnly:true});
+  if(database.prepare('PRAGMA quick_check').get().quick_check!=='ok'||!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('INVALID_STATE');
+  database.close();database=null;
+ }
+ console.log(JSON.stringify({ok:true}));
+}catch{console.error(JSON.stringify({code}));process.exitCode=1}
+finally{database?.close();if(temporary)rmSync(temporary,{recursive:true,force:true})}
+"""
+
+
 def resume_recovery_activation(directory, meta, source, locks):
     # This phase can include post-backup transactions. Do not import or copy any data.
     verify_backup_runtime_images(source)
@@ -1515,28 +1539,45 @@ def resume_recovery_activation(directory, meta, source, locks):
     compose(directory, "up", "-d", "--no-build", "--wait", "db")
     no_players(directory)
     image = create_compose(meta, locks)["services"]["cards"]["image"]
-    run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--user",
-            "10002:10002",
-            "--mount",
-            "type=volume,source="
-            + meta["project"]
-            + "_card_state,target=/opt/card/state,readonly",
-            "--entrypoint",
-            "node",
-            image,
-            "--input-type=module",
-            "-e",
-            "import{DatabaseSync}from'node:sqlite';for(const [file,table]of[['framework.sqlite','framework_state'],['bridge.sqlite','orders']]){const db=new DatabaseSync('/opt/card/state/'+file,{readOnly:true});try{if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok'||!db.prepare(\"SELECT 1 FROM sqlite_master WHERE type='table' AND name=?\").get(table))throw Error('Current recovery state is unavailable')}finally{db.close()}}",
-        ],
-        capture=True,
-    )
+    try:
+        run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--tmpfs",
+                "/tmp:rw,noexec,nosuid,size=272m",
+                "--user",
+                "10002:10002",
+                "--mount",
+                "type=volume,source="
+                + meta["project"]
+                + "_card_state,target=/opt/card/state,readonly",
+                "--entrypoint",
+                "node",
+                image,
+                "--input-type=module",
+                "-e",
+                recovery_state_probe_script(),
+            ],
+            capture=True,
+            structured_error=True,
+        )
+    except CommandError as error:
+        code = (
+            error.code
+            if isinstance(error.code, str)
+            and re.fullmatch(r"[A-Z][A-Z0-9_]{0,80}", error.code)
+            else "RECOVERY_STATE_UNAVAILABLE"
+        )
+        raise RuntimeError(
+            "Activation retry validation failed ("
+            + code
+            + "); current databases and recovery marker preserved. Inspect the recorded runtime/state and repeat the same recover --retry command."
+        ) from None
     try:
         activate_configuration(directory, meta, create_compose(meta, locks))
         (directory / "recovery.pending.json").unlink()

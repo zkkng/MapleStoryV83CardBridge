@@ -22,6 +22,144 @@ class SetupSafety(unittest.TestCase):
     @unittest.skipUnless(
         setup.shutil.which("node"), "Requires Node.js with node:sqlite"
     )
+    def test_recovery_validation_copies_closed_and_wal_only_schema_without_source_writes(
+        self,
+    ):
+        for active in [False, True]:
+            with self.subTest(
+                active=active
+            ), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                state, work = root / "state", root / "work"
+                state.mkdir()
+                work.mkdir()
+                writers = []
+                try:
+                    for file, table in [
+                        ("framework.sqlite", "framework_state"),
+                        ("bridge.sqlite", "orders"),
+                    ]:
+                        writer = sqlite3.connect(state / file)
+                        writer.execute("PRAGMA journal_mode=WAL")
+                        writer.execute("PRAGMA wal_autocheckpoint=0")
+                        writer.execute("CREATE TABLE checkpointed(id INTEGER)")
+                        writer.commit()
+                        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        writer.execute("CREATE TABLE " + table + "(id INTEGER)")
+                        writer.execute("INSERT INTO " + table + " VALUES(1)")
+                        writer.commit()
+                        if active:
+                            writers.append(writer)
+                            primary = sqlite3.connect(
+                                (state / file).as_uri() + "?immutable=1", uri=True
+                            )
+                            try:
+                                self.assertIsNone(
+                                    primary.execute(
+                                        "SELECT 1 FROM sqlite_master WHERE name=?",
+                                        (table,),
+                                    ).fetchone()
+                                )
+                            finally:
+                                primary.close()
+                        else:
+                            writer.close()
+                    before = {p.name: setup.file_hash(p) for p in state.iterdir()}
+                    result = setup.subprocess.run(
+                        [
+                            setup.shutil.which("node"),
+                            "--input-type=module",
+                            "-e",
+                            setup.recovery_state_probe_script(),
+                            str(state),
+                            str(work),
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout), {"ok": True})
+                    self.assertEqual(
+                        before, {p.name: setup.file_hash(p) for p in state.iterdir()}
+                    )
+                    self.assertEqual(list(work.iterdir()), [])
+                    if not active:
+                        (state / "bridge.sqlite").write_bytes(b"invalid SQLite fixture")
+                        before = {p.name: setup.file_hash(p) for p in state.iterdir()}
+                        result = setup.subprocess.run(
+                            [
+                                setup.shutil.which("node"),
+                                "--input-type=module",
+                                "-e",
+                                setup.recovery_state_probe_script(),
+                                str(state),
+                                str(work),
+                            ],
+                            capture_output=True,
+                            text=True,
+                        )
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(
+                            json.loads(result.stderr),
+                            {"code": "RECOVERY_BRIDGE_UNAVAILABLE"},
+                        )
+                        self.assertEqual(
+                            before,
+                            {p.name: setup.file_hash(p) for p in state.iterdir()},
+                        )
+                        self.assertEqual(list(work.iterdir()), [])
+                finally:
+                    for writer in writers:
+                        writer.close()
+
+    def test_recovery_validation_failure_reports_safe_category_and_preserves_current_data(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            setup.private_file(root / "recovery.pending.json", '{"phase":"activating"}')
+            setup.private_file(root / "current-receipt", "retained")
+            meta = {"project": "cosmic-cards-fixture"}
+
+            def run(command, **kwargs):
+                if command[:2] == ["docker", "run"]:
+                    self.assertIn("--read-only", command)
+                    self.assertIn("/tmp:rw,noexec,nosuid,size=272m", command)
+                    self.assertTrue(
+                        any(arg.endswith("/opt/card/state,readonly") for arg in command)
+                    )
+                    self.assertTrue(kwargs["structured_error"])
+                    raise setup.CommandError(
+                        "Suppressed internal diagnostic", "RECOVERY_BRIDGE_UNAVAILABLE"
+                    )
+                return "fixture"
+
+            with patch.object(setup, "verify_backup_runtime_images"), patch.object(
+                setup, "run", side_effect=run
+            ), patch.object(setup, "compose"), patch.object(
+                setup, "no_players"
+            ), patch.object(
+                setup,
+                "create_compose",
+                return_value={"services": {"cards": {"image": "fixture"}}},
+            ), patch.object(
+                setup, "activate_configuration"
+            ) as activate:
+                with self.assertRaisesRegex(
+                    RuntimeError, "RECOVERY_BRIDGE_UNAVAILABLE"
+                ) as error:
+                    setup.resume_recovery_activation(root, meta, root, {})
+                self.assertNotIn("Suppressed", str(error.exception))
+                activate.assert_not_called()
+            self.assertEqual((root / "current-receipt").read_text(), "retained")
+            self.assertEqual(
+                json.loads((root / "recovery.pending.json").read_text())["phase"],
+                "activating",
+            )
+
+    @unittest.skipUnless(
+        setup.shutil.which("node"), "Requires Node.js with node:sqlite"
+    )
     def test_pending_guard_preserves_original_checkpointed_and_uncheckpointed_wal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
