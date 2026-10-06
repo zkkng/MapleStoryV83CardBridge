@@ -52,7 +52,10 @@ class Api:
         return value
 
     def login(self, username, password):
-        self.call("session")
+        session = self.call("session")
+        if session.get("signedIn"):
+            self.call("logout", {})
+            self.call("session")
         self.call("login", {"username": username, "password": password})
 
 
